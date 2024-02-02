@@ -19,6 +19,7 @@ jobs:
           sed -i 's/APP_ID/${{ secrets.APP_ID }}/g' _config.fluid.yml
           sed -i 's/APP_KEY/${{ secrets.APP_KEY }}/g' _config.fluid.yml
           sed -i 's/APP_SERVER/${{ secrets.APP_SERVER }}/g' _config.fluid.yml
+          sed -i 's/BAIDU/${{ secrets.BAIDU }}/g' _config.fluid.yml
       - name: Use Node.js 21.6.1
         uses: actions/setup-node@main
         with:
