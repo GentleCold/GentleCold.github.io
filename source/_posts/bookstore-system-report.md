@@ -1,6 +1,6 @@
 ---
 title: 书店系统实验报告
-category: [实验报告]
+category: [实验报告, 当代数据管理系统]
 date: 2023-12-25 22:08
 tags: [MongoDB, PostgreSQL, ER图, ORM, 全文索引]
 ---
@@ -751,13 +751,17 @@ order = (
 
 修改前吞吐量：
 
+<p align="center">
 <img src="/imgs/image-20231222232912.png"/>
+</p>
 
 在28000左右
 
 修改后吞吐量：
 
+<p align="center">
 <img src="/imgs/image-20231223010125.png"/>
+</p>
 
 达到了50000
 
@@ -779,13 +783,17 @@ order = (
 
 优化后数据表索引信息如下
 
+<p align="center">
 <img src="/imgs/image-20231223163845.png"/>
+</p>
 
 可见添加了倒排索引，以及相应的触发器
 
 全文分词索引向量如下：
 
+<p align="center">
 <img src="/imgs/image-20231223164056.png"/>
+</p>
 
 ### 4. 数据库参数优化
 
@@ -804,11 +812,15 @@ max_overflow=50   # 连接池溢出
 
 总共66个测试，全部通过：
 
+<p align="center">
 <img src="/imgs/image-20231223165817.png"/>
+</p>
 
 测试覆盖率达到93%
 
+<p align="center">
 <img src="/imgs/image-20231223165851.png"/>
+</p>
 
 ### 2. 吞吐率测试
 
@@ -822,7 +834,9 @@ max_overflow=50   # 连接池溢出
 
 commit历史如下：
 
+<p align="center">
 <img src="/imgs/image-20231223165123.png"/>
+</p>
 
 ### 2. 测试驱动开发
 

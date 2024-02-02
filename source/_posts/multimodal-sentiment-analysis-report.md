@@ -1,6 +1,6 @@
 ---
 title: 多模态情感分析实验报告
-category: [实验报告]
+category: [实验报告, 当代人工智能]
 date: 2024-1-31 22:15:51
 tags: [多模态, 模型融合, 情感分析, 自然语言处理]
 ---
@@ -198,7 +198,9 @@ def set_seed(seed):
 
 我们分别调整学习率为1e-4、1e-5、1e-6，以BertDensenetWithAttention模型为例，得到不同学习率条件下训练集损失变化和验证集准确率变化如下：
 
+<p align="center">
 <img src="/imgs/image-20240131220901.png"/>
+</p>
 
 可以看到学习率较小时收敛较慢，较大时容易陷入局部最优，综合考虑选择学习率为1e-5
 
@@ -237,7 +239,9 @@ def set_seed(seed):
 
 训练集损失随每批次训练变化如下：
 
+<p align="center">
 <img src="/imgs/image-20240131194824.png"/>
+</p>
 
 从图片可以看出：
 
@@ -246,7 +250,8 @@ def set_seed(seed):
 
 验证集准确率随训练次数变化如下：
 
-<img src="/imgs/image-20240131195355.png"/>
+<p align="center">
+<img src="/imgs/image-20240131195355.png"/></p>
 
 从图片可以看出：
 

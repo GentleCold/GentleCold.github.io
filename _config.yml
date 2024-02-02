@@ -4,12 +4,16 @@
 
 # Site
 title: GentleCold's Blog
-subtitle: ''
-description: 'Simple'
+subtitle: "GentleCold's blog"
+description: '此网站是GentleCold的个人博客，欢迎关注！'
 keywords:
 - blog
+- 个人博客
 - gentlecold
 - hexo
+- python
+- cpp
+- javascript
 author: GentleCold
 language:
 - zh-CN
@@ -20,7 +24,7 @@ avatar: /imgs/avatar.png
 # URL
 ## Set your site url here. For example, if you use GitHub Page, set url as 'https://username.github.io/project'
 url: https://gentlecold.github.io
-permalink: :year/:month/:day/:title/
+permalink: :year:month:day/:title/
 permalink_defaults:
 pretty_urls:
   trailing_index: true # Set to false to remove trailing 'index.html' from permalinks
@@ -114,3 +118,16 @@ deploy:
 markdown:
   plugins:
     - "@traptitech/markdown-it-katex"
+
+sitemap:
+  path: 
+    - sitemap.xml
+    - sitemap.txt
+  rel: false
+  tags: true
+  categories: true
+
+baidusitemap:
+  path: baidusitemap.xml
+
+all_minifier: true

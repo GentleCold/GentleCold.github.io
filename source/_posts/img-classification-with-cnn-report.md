@@ -1,6 +1,6 @@
 ---
 title: 图像分类及经典CNN实现实验报告
-category: [实验报告]
+category: [实验报告, 当代人工智能]
 date: 2023-12-7 17:48
 tags: [图像分类, 卷积神经网络, MNIST]
 ---
@@ -37,7 +37,9 @@ tags: [图像分类, 卷积神经网络, MNIST]
 
 MNIST的部分图像如下，可见图像经过较好的降噪处理
 
-<img src="/imgs/image-20231205001236.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231205001236.png"/>
+</p>
 
 ### 二、模型实现
 
@@ -49,7 +51,9 @@ LeNet是一种经典的CNN模型，最早由Yann LeCun等人于1998年提出，�
 
 原始模型结构如下：
 
-<img src="/imgs/image-20231205220733.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231205220733.png"/>
+</p>
 
 特点：
 
@@ -81,7 +85,9 @@ AlexNet是另一种经典的卷积神经网络模型，于2012年在ImageNet图�
 
 原始模型结构如下：
 
-<img src="/imgs/image-20231205234646.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231205234646.png"/>
+</p>
 
 论文使用两个CPU并行化训练，实际全连接层维度需要相加
 
@@ -107,7 +113,9 @@ nn.Upsample(scale_factor=8, mode='bilinear')
 
 模型结构如下
 
-<img src="/imgs/image-20231207010843.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231207010843.png"/>
+</p>
 
 网格结构与论文相同，模型参数量为58,299,082，达到千万级别
 
@@ -131,11 +139,15 @@ ResNet网络参考了VGG19网络，在其基础上进行了修改，其核心是
 
 原始模型结构如下：
 
-<img src="/imgs/image-20231207024330.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231207024330.png"/>
+</p>
 
 3x3残差块结构如下（左）
 
-<img src="/imgs/image-20231206175222.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231206175222.png"/>
+</p>
 
 特点：
 
@@ -160,7 +172,9 @@ ResNet的设计输入同样是Imgenet数据集即224x224，与AlexNet一样其�
 
 而实际上仅用28x28的MNIST数据集是能够完成卷积的，但是这样的效果并不好(准确率仅97.5%)，从结构可以发现原因:
 
-<img src="/imgs/image-20231207013722.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231207013722.png"/>
+</p>
 
 最后两个残差块的输出维度都是1x1，学习到的特征维度过小
 
@@ -190,11 +204,15 @@ V1原始模型如下
 
 深度可分离结构(右):
 
-<img src="/imgs/image-20231206174546.png" width="40%" height="40%"/>
+<p align="center">
+<img src="/imgs/image-20231206174546.png"/>
+</p>
 
 网络结构：
 
-<img src="/imgs/image-20231206174637.png" width="25%" height="25%"/>
+<p align="center">
+<img src="/imgs/image-20231206174637.png"/>
+</p>
 
 模型调整上与前文一样，将输入数据放大两倍，同时在最后的全连接层前添加dropout
 
@@ -212,7 +230,9 @@ GoogLeNet是谷歌团队为参加ILSVRC 2014比赛而准备，其核心是提出
 
 inceptionv1结构如下
 
-<img src="/imgs/image-20231206163219.png" width="40%" height="40%"/>
+<p align="center">
+<img src="/imgs/image-20231206163219.png"/>
+</p>
 
 - 并行化可以从不同角度学习到更多特征
 
@@ -222,7 +242,9 @@ inceptionv1结构如下
 
 模型结构如下：
 
-<img src="/imgs/image-20231206175645.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231206175645.png"/>
+</p>
 
 在模型的调整上，输入数据集的放大，修改池化层为全局平均池化与前文一致
 
@@ -317,7 +339,9 @@ set_seed(42)
 
 **验证集准确率随训练步数变化图**
 
-<img src="/imgs/image-20231207021925.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231207021925.png"/>
+</p>
 
 通过验证集准确率的变化趋势可以看出
 
@@ -329,7 +353,9 @@ set_seed(42)
 
 **训练集损失随每批次数据变化图**
 
-<img src="/imgs/image-20231207021946.png" width="50%" height="50%"/>
+<p align="center">
+<img src="/imgs/image-20231207021946.png"/>
+</p>
 
 从损失变化趋势可以看出
 

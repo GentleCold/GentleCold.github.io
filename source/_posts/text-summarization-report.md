@@ -1,6 +1,6 @@
 ---
 title: 文本摘要实验报告
-category: [实验报告]
+category: [实验报告, 当代人工智能]
 date: 2023-12-29 23:14:51
 tags: [文本摘要, Transformer, LSTM, 自然语言处理]
 ---
@@ -27,7 +27,9 @@ seq2seq模型可以用于处理序列数据，与普通的卷积神经网络不�
 
 一种常见的基于RNN的seq2seq结构如下
 
-<img src="/imgs/image-20231229010520.png" width="50%"/>
+<p align="center">
+<img src="/imgs/image-20231229010520.png"/>
+</p>
 
 #### 2. 输入和输出
 
@@ -347,7 +349,9 @@ fragment score是通过计算预测结果中的不连续匹配（例如，插入
 
 我们对比了三种优化器（adam,adamw,sgd），得到训练损失变化如下：
 
-<img src="/imgs/image-20231229203935.png" width="50%"/>
+<p align="center">
+<img src="/imgs/image-20231229203935.png"/>
+</p>
 
 可见adam和adamw的训练效果差不多，sgd则表现不佳，说明对于transformer来说需要更强劲的优化器
 
@@ -402,7 +406,8 @@ meteor指标额外引入词序的检查，说明词序也较为合适
 
 在训练集和验证集上的收敛情况：
 
-<img src="/imgs/image-20231229231451.png" width="50%"/>
+<p align="center">
+<img src="/imgs/image-20231229231451.png"/></p>
 
 使用此模型为测试集生成的所有结果保存在output/result.csv中
 
