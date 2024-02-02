@@ -3,17 +3,23 @@
 ## Source: https://github.com/hexojs/hexo/
 
 # Site
-title: Hexo
+title: GentleCold's Blog
 subtitle: ''
-description: ''
+description: 'Simple'
 keywords:
+- blog
+- gentlecold
+- hexo
 author: GentleCold
-language: zh
-timezone: ''
+language:
+- zh-CN
+- en
+timezone: 'Asia/Shanghai'
+avatar: /imgs/avatar.png
 
 # URL
 ## Set your site url here. For example, if you use GitHub Page, set url as 'https://username.github.io/project'
-url: http://gentlecold.github.io
+url: https://gentlecold.github.io
 permalink: :year/:month/:day/:title/
 permalink_defaults:
 pretty_urls:
@@ -45,12 +51,14 @@ relative_link: false
 future: true
 syntax_highlighter: highlight.js
 highlight:
+  enale: false
   line_number: true
   auto_detect: false
   tab_replace: ''
   wrap: true
   hljs: false
 prismjs:
+  enable: false
   preprocess: true
   line_number: true
   tab_replace: ''
@@ -96,9 +104,13 @@ ignore:
 # Extensions
 ## Plugins: https://hexo.io/plugins/
 ## Themes: https://hexo.io/themes/
-theme: Acetolog
+theme: fluid
 
 # Deployment
 ## Docs: https://hexo.io/docs/one-command-deployment
 deploy:
   type: ''
+
+markdown:
+  plugins:
+    - "@traptitech/markdown-it-katex"
