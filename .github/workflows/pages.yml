@@ -14,15 +14,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           # If your repository depends on submodule, please see: https://github.com/actions/checkout
           submodules: recursive
-      - name: Replace secrets in _config.fluid.yml
+      - name: Replace variables in _config.fluid.yml
         run: |
-          sed -i 's/${{ secrets.APP_ID }}/'"$APP_ID"'/g' _config.fluid.yml
-          sed -i 's/${{ secrets.APP_KEY }}/'"$APP_KEY"'/g' _config.fluid.yml
-          sed -i 's/${{ secrets.APP_SERVER }}/'"$APP_SERVER"'/g' _config.fluid.yml
-        env:
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_KEY: ${{ secrets.APP_KEY }}
-          APP_SERVER: ${{ secrets.APP_SERVER }}
+          sed -i "s/APP_ID/${{ secrets.APP_ID }}/g" _config.fluid.yml
+          sed -i "s/APP_KEY/${{ secrets.APP_KEY }}/g" _config.fluid.yml
+          sed -i "s/APP_SERVER/${{ secrets.APP_SERVER }}/g" _config.fluid.yml
       - name: Use Node.js 21.6.1
         uses: actions/setup-node@main
         with:
