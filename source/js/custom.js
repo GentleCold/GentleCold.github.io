@@ -59,15 +59,7 @@
     t.getElementsByTagName("head")[0].appendChild(a);
   }
   function s() {
-    return (
-      "rgb(" +
-      ~~(255 * Math.random()) +
-      "," +
-      ~~(255 * Math.random()) +
-      "," +
-      ~~(255 * Math.random()) +
-      ")"
-    );
+    return "#e74c3c";
   }
   var d = [];
   (e.requestAnimationFrame = (function () {
@@ -110,10 +102,17 @@
       snum = "0" + snum;
     }
     document.getElementById("timeDate").innerHTML =
-      "本站已运行 " + dnum + " 天 " + hnum + " 小时 " + mnum + " 分 " + snum + " 秒";
+      "本站已运行 " +
+      dnum +
+      " 天 " +
+      hnum +
+      " 小时 " +
+      mnum +
+      " 分 " +
+      snum +
+      " 秒";
   }
 
   update();
   setInterval(update, 1000);
 })();
-
