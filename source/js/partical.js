@@ -85,7 +85,7 @@ if (subtitle === "归档") {
   generate(1);
 } else if (subtitle === "标签") {
   generate(2);
-} else if (subtitle === "友情连接") {
+} else if (subtitle === "友情链接") {
   generate(3);
 } else if (subtitle === "关于") {
   generate(4);
