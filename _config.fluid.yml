@@ -1007,10 +1007,10 @@ links:
   # Member item of page
   items:
     - {
-      title: "Fluid Blog",
-      intro: "主题博客",
-      link: "https://hexo.fluid-dev.com/",
-      avatar: "/img/favicon.png"
+      title: "又见苍岚",
+      intro: "蓝天依旧，明眸如初",
+      link: "https://www.zywvvd.com",
+      avatar: "https://www.zywvvd.com/image/avatar.png"
     }
 
   # 当成员头像加载失败时，替换为指定图片
@@ -1021,7 +1021,7 @@ links:
   # Custom content at the bottom of the links
   custom:
     enable: true
-    content: '<hr><p>在下方留言申请加入我的友链，按如下格式提供信息：</p><ul><li>博客名：Fluid Blog</li><li>简介：主题博客</li><li>链接：https://hexo.fluid-dev.com</li><li>图片：https://hexo.fluid-dev.com/img/favicon.png</li></ul>'
+    content: "<hr><p>在下方留言申请加入我的友链，按如下格式提供信息：</p><ul><li>博客名：GentleCold's Blog</li><li>简介：Make something awesome!</li><li>链接：https://gentlecold.top</li><li>图片：https://gentlecold.top/imgs/avatar_1.png</li></ul>"
 
   # 评论插件
   # Comment plugin
