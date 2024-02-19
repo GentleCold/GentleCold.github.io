@@ -1,6 +1,6 @@
 ---
-title: CPP笔记
-category: [笔记, CPP]
+title: CPP学习笔记
+category: [笔记]
 date: 2024-02-12 17:52
 tags: [笔记, CPP]
 ---
@@ -239,7 +239,7 @@ class LessThan {
 
 ## 5 Concepts
 
-- define 
+- define
 
 ```cpp
 template<typename T>
@@ -279,6 +279,7 @@ int y = sum('a', 2.4);
 ```
 
 - **perfect forwarding**
+
 ## 6 library
 
 - std::swap(a, b)
@@ -289,8 +290,9 @@ int y = sum('a', 2.4);
 - io
 - file system/file streams
 - containers: vector/list/map/set
-    - map --> rb_tree
-    - unordered map --> hash table
+
+  - map --> rb_tree
+  - unordered map --> hash table
 
 - head files
 <p align="center">
@@ -310,5 +312,3 @@ int y = sum('a', 2.4);
 - span/mem_fn/enable_if
 
 # 第二章 Effective modern c++
-
-
