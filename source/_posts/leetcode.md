@@ -27,20 +27,13 @@ using namespace std;
 
 > time: O(log n), space: O(1)
 
-Solution:
-
 - left，right --> mid
 - compare mid and change left/right
-
-Think:
-
 - 终止条件？边界？
 
 ### 27 移除元素(2024-02-19)
 
 > time: O(n), space: O(1)
-
-Solution:
 
 - 暴力双层循环
 - 双指针，右指针挑到非target给左指针(全换了)
@@ -50,8 +43,6 @@ Solution:
 
 > time: O(n), space: O(n) // store the ans vector
 
-Solution:
-
 - 本质就是归并排序
 - 头尾往中间逆序可以减少边界条件判断
 
@@ -59,6 +50,46 @@ Solution:
 
 > time: O(n), space: O(1)
 
-Solution:
-
 - 滑动窗口，左指针去掉数字，右指针增加数字
+
+### 59 螺旋矩阵II(2024-02-19)
+
+> time: O(n^2), space: O(1)
+
+- 模拟法，类似贪吃蛇的移动
+
+## 链表
+
+### 203 移除链表元素(2024-02-20)
+
+> time: O(n), space: O(1)
+
+- 注意内存管理和head条件即可
+- 可以用dummyhead来优化head的条件判断
+
+### 707 设计链表(2024-02-20)
+
+- 自己实现一个单向链表/双向链表
+- 谨防未定义行为
+
+### 206 反转链表(2024-02-21)
+
+> time: O(n), space: O(1)
+
+- 递归/迭代两种方式（迭代更好写
+
+### 24 两两交换链表中的节点(2024-02-21)
+
+> time: O(n), space: O(1)
+
+- dummyhead大法好
+
+# 第二章 LeetCode HOT100
+
+### 3 无重复字符的最长子串(2024-02-21)
+
+> time: O(n), space: O(x) // 需要记录字符种类
+
+- 区分字串和子序列
+- 滑动窗口，注意长度为1的情况
+- 优化：用map记录字符出现位置(右指针发现的重复字符不一定是最开始的那个)
