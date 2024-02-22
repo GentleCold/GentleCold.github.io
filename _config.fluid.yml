@@ -964,7 +964,7 @@ about:
     - { class: "iconfont icon-github-fill", link: "https://github.com/GentleCold", tip: "GitHub" }
     - { class: "iconfont icon-zhihu-fill", link: "https://www.zhihu.com/people/edgelove-26", tip: "知乎" }
     - { class: "iconfont icon-bilibili", link: "https://space.bilibili.com/475449421?spm_id_from=333.1007.0.0", tip: "bilibili" }
-    - { class: "iconfont icon-mail", link: "mailto:1952173800@qq.com", tip: "mail" }
+    - { class: "iconfont icon-mail", link: "mailto:gentlecold@qq.com", tip: "mail" }
 
 
 #---------------------------
