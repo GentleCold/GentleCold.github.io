@@ -21,7 +21,7 @@ description: 本文介绍了使用虚拟卡Wildcard来开通ChatGPT的Plus服务
 
 进去这个链接：https://bewildcard.com/i/GENTLE
 
-点击注册，邀请码填写GENTLE享优惠，然后选择第一个服务即可
+点击注册，邀请码填写**GENTLE**享优惠，然后选择第一个服务即可
 
 要是还不会可以直接在下方留下联系方式
 
