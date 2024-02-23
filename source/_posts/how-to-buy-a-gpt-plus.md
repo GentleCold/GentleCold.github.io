@@ -2,7 +2,8 @@
 title: 国内购买ChatGPT Plus教程
 category: [ChatGPT]
 date: 2024-02-23 15:14
-tags: [ChatGPT购买教程]
+tags: [ChatGPT, Sora]
+description: 本文介绍了使用虚拟卡Wildcard来开通ChatGPT的Plus服务的方法，针对OpenAI封锁国内IP的情况提供了最快捷有效的解决方案。首先介绍了成本预估，包括开通虚拟卡和ChatGPT充值的费用。然后列举了申请虚拟卡的步骤，包括注册、填写邀请码、支付费用等流程。文章强调了拥有国外银行卡的重要性，不仅可以订阅ChatGPT，还可以使用在其他国外付费订阅软件上。最后提到了一键开通服务，简化了升级过程。
 ---
 
 写在开头：本文使用[虚拟卡wildcard](https://bewildcard.com/i/GENTLE)来帮助开通Plus，不得不承认，这是在openai封锁国内ip的情况下最快捷有效的办法
