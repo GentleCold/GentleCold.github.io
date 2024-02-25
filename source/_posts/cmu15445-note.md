@@ -1,11 +1,15 @@
 ---
-title: CMU15445-Spring2023课程笔记
+title: CMU15445-Fall2023课程笔记
 category: [笔记]
 date: 2024-02-22 17:37
 tags: [笔记, CMU15445, 数据库]
 ---
 
 # 课程笔记
+- algebra
+- vector database for ai
+- relational languages
+    - dml/ddl/dcl
 
 # 项目思路
 
