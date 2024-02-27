@@ -156,7 +156,14 @@ using namespace std;
 - Great answer! https://www.zhihu.com/question/21923021/answer/281346746
 - 注意j跑到0时的情况，i和j都增加(注意j为-1或j为0，前者即不匹配的情况)
 
+### 459 重复的子字符串(2024-02-26)
+
+- 暴力枚举子串(n^2)
+- s+s再匹配s
+
 ## 栈与队列
+
+- 在SGI STL中，栈和队列并不算容器，被归类为container adapter，底层使用deque，不提供迭代器
 
 # 第二章 LeetCode HOT100
 
