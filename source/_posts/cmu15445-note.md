@@ -31,7 +31,9 @@ set(CMAKE_C_COMPILER "/usr/bin/clang")
 set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
 ```
 
-nmd这玩意儿要写在project后面谁跟我说要写在前面的？？
+~~nmd这玩意儿要写在project后面谁跟我说要写在前面的？？~~
+
+这玩意儿放的位置很迷
 
 ## P0. C++ Primer
 
@@ -48,9 +50,29 @@ nmd这玩意儿要写在project后面谁跟我说要写在前面的？？
 - Put: 所有经过的节点都需要克隆
 - 因为Put是一个const函数，所以tmd不能修改root!
 - nmd所有sharedptr都tm是const TrieNode，只有uniqueptr是non-const的，That's why the return of Clone is unique!
-- 所以本质就是non-const unique->const shared，因为shared是const，所以只能从后往前构建，那就用栈！
+- 所以本质就是non-const unique->const shared，因为shared是const
 - why use unique? 如果是non-const shared，把它改了那所有的引用都改了
 - 还要注意空字符串/root\_初始为nullptr!
 - wtmd，map的insert方法不会自动替换相同的键的值！要么用[]要么用insert_or_assign!!
 
 ### Task2
+
+- 这时候就可以看到COW的好处了：读写共存(如果不考虑一致性)
+
+### Task3
+
+- 本来使用lldb调试的，不知道为什么无法显示继承类的定义，遂改成gdb调试
+
+### Task4
+
+- 利用transform实现大小写转换：
+
+```cpp
+std::transform(val.begin(), val.end(), std::back_inserter(result), ::tolower);
+```
+
+### Result
+
+<p align="center">
+<img src="/imgs/image-20240228215147.png"/>
+</p>

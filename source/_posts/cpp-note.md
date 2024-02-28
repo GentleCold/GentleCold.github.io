@@ -11,6 +11,7 @@ tags: [笔记, CPP]
 
 - A tour of c++
 - Effective modern c++
+- C++ concurrency in action
 
 # 第一章 A tour of c++
 
@@ -315,9 +316,17 @@ int y = sum('a', 2.4);
 
 ## 类型推导
 
-# 第三章 c++对象模型
+# 第三章 C++ concurrency in action
 
-// Todo
+## 基础
+
+- https://paul.pub/cpp-concurrency/
+- 并发/并行，线程/进程
+- 阿姆达尔定律
+- thread/join/detach/call_once/once_flag
+- 竞争条件/临界区/mutex/细粒度/互斥
+
+- 经典IPC问题，参考：操作系统设计与实现
 
 # 第四章 零零碎碎
 
