@@ -7,10 +7,21 @@ tags: [笔记, CMU15445, 数据库]
 
 # 课程笔记
 
+## Overview
+
 - algebra
 - vector database for ai
 - relational languages
   - dml/ddl/dcl
+
+## SQL
+
+- aggregates/group by/having
+- string operations/date operations/output redirection
+- window functions(over/partition by)
+- nested queries
+- lateral join
+- common table expressions(with as)
 
 # 项目思路
 
