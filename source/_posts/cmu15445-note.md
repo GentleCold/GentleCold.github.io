@@ -22,6 +22,58 @@ tags: [笔记, CMU15445, 数据库]
 - nested queries
 - lateral join
 - common table expressions(with as)
+- union/intersect/except
+
+## Database storage
+
+- outline
+
+```mermaid
+flowchart LR
+    DiskManager-->BufferPoolManager-->AccessMethods-->OperatorExecution-->QueryPlanning
+```
+
+- volatile(bytes addressable) / non-volatile(block)
+- sequential / random access
+- why not use os(mmap, Virtual memory)?
+
+### Three storage approaches
+
+- heap file --metadata track--> page(with header) -> tuple
+- tuple oriented storage
+  - slotted pages/record ids
+  - denormalized(pre-join) tuple data
+- log structured storage(good for write-heavy workloads)
+  - coalesce
+  - sorted string tables
+- index organized Storage
+  - can be sorted and using binary search
+
+### Inside tuple
+
+- word-aligned tuples
+- variable precision numbers/fixed precision numbers
+- null data types(bitmap/special value)
+- large data
+
+## Storage models / Compression
+
+- oltp/olap/hybrid(htap)
+- row is for oltp/col is for olap
+
+### three storage models
+
+- n-ary storage model/decomposition storage model/hybrid storage model(pax)
+- DSM: how to merge a complete tuple(dictionary compression)
+- partition attributes across(pax)
+
+### database compression
+
+- block level
+  - general-purpose algorithm(zstd)
+- tuple-level
+- attribute-level
+- column-level
 
 # 项目思路
 
