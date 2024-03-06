@@ -74,6 +74,41 @@ flowchart LR
 - tuple-level
 - attribute-level
 - column-level
+  - run-length encoding
+  - bit packing
+  - bitmap encoding
+  - delta encoding
+  - dictionary compression
+
+## Database memory
+
+- locks/latches
+- buffer pool optimization
+  - multiple buffer pools
+  - pre fetching
+  - scan sharing
+  - buffer pool bypass
+- lru/lru-k/mysql approximate lru-k
+- fsync errors(there is a page cache between file disk and file system), so use direct IO
+
+## Hash tables
+
+- hash function/hash collision
+
+### hash function
+
+- facebook xxhash3/google farmhash
+
+### static hashing schemes
+
+- probe hashing/cuckoo hashing
+
+### dynamic hashing schemes
+
+- chained hashing
+- bloom filters(false positives sometimes occur, tell you a key is exists maybe wrong)
+- extendible hashing
+- linear hashing
 
 # 项目思路
 
@@ -111,12 +146,12 @@ set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
 
 - Get: 找到后用dynamic_cast把指针改成指向TrieNodeWithValue
 - Put: 所有经过的节点都需要克隆
-- 因为Put是一个const函数，所以tmd不能修改root!
-- nmd所有sharedptr都tm是const TrieNode，只有uniqueptr是non-const的，That's why the return of Clone is unique!
+- 因为Put是一个const函数，所以不能修改root!
+- 所有sharedptr都是const TrieNode，只有uniqueptr是non-const的，That's why the return of Clone is unique!
 - 所以本质就是non-const unique->const shared，因为shared是const
 - why use unique? 如果是non-const shared，把它改了那所有的引用都改了
 - 还要注意空字符串/root\_初始为nullptr!
-- wtmd，map的insert方法不会自动替换相同的键的值！要么用[]要么用insert_or_assign!!
+- **map的insert方法不会自动替换相同的键的值！**要么用[]要么用insert_or_assign!!
 
 ### Task2
 
@@ -138,4 +173,53 @@ std::transform(val.begin(), val.end(), std::back_inserter(result), ::tolower);
 
 <p align="center">
 <img src="/imgs/image-20240228215147.png"/>
+</p>
+
+## P1. Buffer Pool
+
+### Task1
+
+- LRU-k
+  - 比较第前k次的访问时间
+  - 如果访问次数未超过k次，则认为时间为+inf
+  - 如果有多个+inf，则按照LRU的方式比较(比较最早的那次访问)
+  - 相当于访问次数未超过k次的不计入缓存
+  - 这样即考虑了访问频次又考虑了访问时间
+
+### Task2
+
+- 实现DiskScheduler，创建后台线程负责处理所有的IO请求
+
+### Task3
+
+- 结合替换算法/IO处理，实现缓存管理器，整理逻辑如下：
+
+```mermaid
+flowchart
+    subgraph important
+    a[page_id on disk] --> b[frame_id on buffer]
+    end
+    LRUKReplacer --> BufferPoolManager
+    DiskScheduler --> BufferPoolManager
+    BufferPoolManager --> NewPage --> c[new and pin the page]
+    BufferPoolManager --> FetchPage --> g[pin the page, get page to disk]
+    BufferPoolManager --> UnpinPage --> d[unpin the page]
+    BufferPoolManager --> FlushPage --> e[write page to disk -f]
+    BufferPoolManager --> DeletePage --> f[delete page from disk]
+```
+
+- 注意多线程，两个fetch同一个frame的情况，pincount相当于引用计数
+- unpinpage时如果找到页就将其设为是否可替换（注意isdirty的true->false这种情况不存在，如果原来是脏页不能直接变成false）
+- page的读写锁不是必需的(不会在pin住page的情况下修改page中内容)，在一把大锁保平安的基础上
+- **别把必要的函数放到assert里面！！！**
+
+### 优化
+
+- 如果是顺序扫描，则尽量不替换顺序的page
+- 并行化IO，需要保证IO操作的顺序，未实现
+
+### Result
+
+<p align="center">
+    <img src="/imgs/image-20240305142502.png"/>
 </p>
