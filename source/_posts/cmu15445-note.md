@@ -110,6 +110,37 @@ flowchart LR
 - extendible hashing
 - linear hashing
 
+## B+ tree
+
+- B+Tree has a better concurrency access than B tree
+- selection conditions/duplicate keys
+- clusted b+ tree
+
+### design choices
+
+- node size
+- merge threshold
+- variable length keys
+- intra node search
+
+### optimization
+
+- prefix compression/suffix truncation
+- deduplication
+- pointer swizzling
+- bulk insert
+- write optimized b+ tree(delay update)
+
+## Index concurrency control
+
+- test and set spinlock(atomic)/blocking os mutex(mutex)/reader writer locks(shared_mutex)
+
+### hash table latching
+
+- page latches/slot latches
+
+### b+tree latching
+
 # 项目思路
 
 ## 项目准备
@@ -223,3 +254,12 @@ flowchart
 <p align="center">
     <img src="/imgs/image-20240305142502.png"/>
 </p>
+
+## P2. Hash Table
+
+### Task1
+
+- 用pageguard封装page，负责其latch/pincount的释放
+- 细分为writepageguard和readpageguard，分别对应写锁和读锁
+
+### Task2
