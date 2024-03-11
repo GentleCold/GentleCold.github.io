@@ -257,9 +257,28 @@ flowchart
 
 ## P2. Hash Table
 
+其实可以直接奔着task3去做，很多辅助函数暂时用不到，或者等重构的时候再实现，此project的目标就是实现find/insert/delete三个接口
+
 ### Task1
 
 - 用pageguard封装page，负责其latch/pincount的释放
 - 细分为writepageguard和readpageguard，分别对应写锁和读锁
+- 注意unpinpage其实传入的dirty是guard自身的dirty成员数据
+- 接收that的移动时，**需要先释放自己的page**
 
 ### Task2
+
+- 实现各种Page的定义
+- 使用INVALID_PAGE_ID来标记页的不存在
+- 定义bucket的remove时，注意如果remove的是最后一个元素则直接减size即可
+
+### Task3
+
+- 实现完整的ExtendibleHash，前两task的实现就是为此服务的
+- 注意到三种Page的实现中都删除了构造函数，因为使用reinterpret_cast转换指针后无法调用构造函数
+- local depth 的作用是指示directory中有几个指向了bucket: $2^{(global - local)}$ 
+- 注意split bucket并重新分配后，新插入仍有可能overflow，此时继续split
+- increase global后复制以前的一半到新的一半
+- 进行位操作时注意类型保持uint32，同时注意无符号类型倒序遍历时当i=0后再减一会溢出
+- uint32 类型的数据右移32位会导致数据没有变化？(**如果移动位数超过类型位数，会自动取余**)
+- shrink时注意如果两个bucket都为空，那就继续shrink
