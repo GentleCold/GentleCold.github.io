@@ -259,26 +259,125 @@ flowchart
 
 其实可以直接奔着task3去做，很多辅助函数暂时用不到，或者等重构的时候再实现，此project的目标就是实现find/insert/delete三个接口
 
+另外由于许多类都提前定义好了，需要额外关注下成员变量（比如page_guard别忘了dirty变量）
+
+要求实现的是Extendible Hash，主要难点在于插入和删除
+
+此数据结构的一些特点：
+
+- 添加了一个header，通过most-significant bit来索引directory，而通过least-significant bit来索引bucket，添加header是为了提供更好的并发能力
+- directory size 必定是2的幂次方
+- local depth 的作用是指示directory中有几个指向了bucket: $2^{(global - local)}$
+- local depth <= global depth
+- 虽说是可扩容的，但仍无法超过最大限制，比如directory的max depth为4，如果第一个bucket满了，那么无法再插入最后4位为0000的数了
+
+### Insert的几种Case（方括号表示local depth）：
+
+- 正常Insert，返回
+- bucket已满，需要扩容，Local depth必定增加：
+- 初始情况这4个bucket_idx都指向同一个bucket，在110的位置插入并且overflow
+  - 找到另一类新bucket的位置
+    - 另一类bucket：比如depth为1时，所有的0都指向同一个bucket，当depth增长为2时，多出来的一位就可以进行区分（10/00）
+  - 更新那一路的bucket（可能有多个）
+  - 更新local depth/remap directory，重新分发bucket中的元素
+
+```shell
+00[0] -> 0[00] <-- new bucket idx
+01[0] -> 0[10]
+10[0] -> 1[00]
+11[0] -> 1[10] <-- current bucket idx
+```
+
+- 需要增加global depth：
+  - 复制前一半的元数据
+  - 再进行bucket的remap和redistribute
+
+```shell
+[00] -> [000] <- current bucket idx
+0[1] -> 00[1]
+[10] -> 0[10]
+1[1] -> 01[1]
+     -> [100] <- new bucket idx
+     -> 10[1]
+     -> 1[10]
+     -> 11[1]
+```
+
+注意重新分配后仍有可能无法插入，此时需要继续扩容（循环进行直到无法扩容或插入成功）
+
+### Remove的case：
+
+- 考虑删除后的shrink
+- 不同于Insert，shrink只考虑global depth = local depth的情况，因此对应的另一个bucket有且只有一个
+- why shrink: 当10指向的bucket为空时，就可以释放这个bucket并将此处索引映射到00的bucket，有两个位置指向同一个bucket，因此减小local depth
+- 当且仅当所有local depth小于global depth时，才会进行shrink
+- 不同于Insert，shrink减小global depth，不用再进行额外的元数据操作
+- 存在多次shrink的情况，比如下图，如果01位置的bucket为空，当00的bucket为空并进行shrink后，此时需要继续shrink(another bucket is empty)
+
+```shell
+[00] -> 0[0] <-- bucket idx
+0[1] -> 0[1] <-- another bucket
+[10] -> 1[0]
+1[1] -> 1[1]
+```
+
 ### Task1
 
 - 用pageguard封装page，负责其latch/pincount的释放
 - 细分为writepageguard和readpageguard，分别对应写锁和读锁
-- 注意unpinpage其实传入的dirty是guard自身的dirty成员数据
-- 接收that的移动时，**需要先释放自己的page**
+- 注意unpinpage传入的dirty是guard自身的dirty成员数据
+- 对于移动操作，**需要先释放自己的page**
+- 不要忘记自身携带的dirty成员变量
 
 ### Task2
 
 - 实现各种Page的定义
 - 使用INVALID_PAGE_ID来标记页的不存在
 - 定义bucket的remove时，注意如果remove的是最后一个元素则直接减size即可
+- **cpp的类中成员变量默认值是随机的，不要忘记初始化**
 
 ### Task3
 
 - 实现完整的ExtendibleHash，前两task的实现就是为此服务的
 - 注意到三种Page的实现中都删除了构造函数，因为使用reinterpret_cast转换指针后无法调用构造函数
-- local depth 的作用是指示directory中有几个指向了bucket: $2^{(global - local)}$ 
-- 注意split bucket并重新分配后，新插入仍有可能overflow，此时继续split
-- increase global后复制以前的一半到新的一半
-- 进行位操作时注意类型保持uint32，同时注意无符号类型倒序遍历时当i=0后再减一会溢出
+- 进行位操作时注意类型保持uint32，同时注意**无符号类型倒序遍历时当i=0后再减一会溢出**
 - uint32 类型的数据右移32位会导致数据没有变化？(**如果移动位数超过类型位数，会自动取余**)
-- shrink时注意如果两个bucket都为空，那就继续shrink
+
+### 锁优化
+
+- 得益于pageguard的实现，我们可以轻松进行锁优化
+
+  - GetValue:
+
+  ```mermaid
+  flowchart LR
+      a[rlock header] --> b[rlock directory] --> c[unlock header] --> d[rlock bucket] --> e[unlock directory] --> f[get value]
+  ```
+
+  - Insert:
+
+  ```mermaid
+  flowchart LR
+      a[wlock header] --> b[wlock directory] --> c[unlock header] --> d[wlock bucket] --> g[insert value]
+  ```
+
+  - Remove:
+
+  ```mermaid
+  flowchart LR
+      a[rlock header] --> b[wlock directory] --> c[unlock header] --> d[wlock bucket] --> g[remove value]
+  ```
+
+- ~~注意到header仅在insert时会进行修改（remove的shrink没有要求删掉directory），可以用bitmap记录是否有directory（锁仍是必需的，因为要保证bitmap操作的线程安全）~~ 因为仍要锁，实际并无增益
+- 在判断插入无需grow或者删除shrink时，即可释放directory锁
+- 刚开始对directory用读锁，如果发现directory需要修改，则用写锁重头来过（经过测试只对remove操作这样做，因为shrink发生的情况较少）
+
+### Result
+
+以上优化只是个人思路，实际实操并没有明显提升(qwq)
+
+最终结果：
+
+<p align="center">
+    <img src="/imgs/image-20240313164429.png"/>
+</p>
