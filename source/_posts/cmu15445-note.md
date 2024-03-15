@@ -141,6 +141,15 @@ flowchart LR
 
 ### b+tree latching
 
+## Sorting / Aggregations
+
+- in-memory sorting(quick sort)
+- top-n heap sort/external merge sort(use three buffer pool page)
+- general external merge sort
+- double buffering(overlap cpu/io operations)
+- using b+tree(cluster/uncluster) for sorting
+- hashing for aggregations
+
 # 项目思路
 
 ## 项目准备
@@ -246,8 +255,9 @@ flowchart
 
 ### 优化
 
-- 如果是顺序扫描，则尽量不替换顺序的page
+- 如果是顺序扫描，则尽量不替换顺序的page（后一个page会被访问，前一个page不会被访问，从而可以调整替换策略）
 - 并行化IO，需要保证IO操作的顺序，未实现
+- 如果只锁一个mutex，优先用 unique lock 相对于 scoped lock
 
 ### Result
 

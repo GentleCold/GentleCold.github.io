@@ -5,6 +5,8 @@ date: 2024-02-29 15:49
 tags: [区块链]
 ---
 
+# 挖矿模拟
+
 ## Minichain 代码结构
 
 ```mermaid
@@ -75,3 +77,7 @@ TransactionProducer 作为生产者，每次生产一个Transaction，然后放�
 当TransactionPool达到最大值，通知挖矿进程MinerNode，会将所有的Transaction取出，然后计算Merkle树根的值，加上前一个区块的哈希值，以及一个随机数nonce得到区块头，并与所有的Transaction组成的区块体结合构成一个区块
 
 计算整个区块体的哈希值，挖矿进程通过不断随机nonce值使得哈希值满足难度系数（前n位为0），则将其加入区块链（前一个区块的后面）
+
+# 交易模拟
+
+## 签名，验签，UTXO
