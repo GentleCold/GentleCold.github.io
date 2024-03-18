@@ -81,3 +81,6 @@ TransactionProducer 作为生产者，每次生产一个Transaction，然后放�
 # 交易模拟
 
 ## 签名，验签，UTXO
+
+- 每一次in作为支出，out作为收入，一个transaction的in和out相等
+- 存在的问题，in还没被打包进区块链，导致in被重复使用

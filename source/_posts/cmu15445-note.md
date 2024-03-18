@@ -150,6 +150,55 @@ flowchart LR
 - using b+tree(cluster/uncluster) for sorting
 - hashing for aggregations
 
+## Join algorithm
+
+- early/late materialization(record id)
+- (block/index)nested loop join/sort merge join/hash join
+- use smaller table as outer table
+- partitioned hash join
+- hybrid hash join
+
+## Query Execution
+
+### processing model
+
+- iterator model
+- materialization model
+- vectorization model
+- plan processing direction
+
+### access methods
+
+- sequential scan
+  - zone maps
+- index scan
+- multi-index scan
+- modification query
+  - Halloween problem
+
+### expression evaluation
+
+- JIT compile
+
+- scheduler
+- parallel/distribute database
+- process/thread/ per worker
+- sql server
+- embedded dbms
+- intra query parallelism
+- intra-operator parallelism(horizontal)
+  - gather/distribute/repartition
+- inter-operator parallelism(vertical)
+- bushy parallelism
+- io parallelism(RAID)
+
+## Query planning/Optimization
+
+- predicate pushdown
+- replace Cartesian product
+- projection pushdown
+- hyperloglog
+
 # 项目思路
 
 ## 项目准备
