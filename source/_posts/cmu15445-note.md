@@ -199,6 +199,49 @@ flowchart LR
 - projection pushdown
 - hyperloglog
 
+## Concurrency control
+
+- ACID
+- ensuring atomicity: logging/shadow paging
+- ensuring isolation: pessimistic/optimistic
+- dependency graph
+- conflict serializable/view serializable
+
+## 2Phase locking
+
+- shared/exclusive lock
+- strong 2pl(avoid cascading abort)
+- deadlock detection/prevention
+- waits-for graph
+- deadlock handling: find victim/completely roll back/partial
+- deadlock prevention: wait-die/wound-wait(using priority)
+- lock granularity/hierarchy
+- intention locks: is/ix/six
+
+## Timestamp ordering concurrency control
+
+- can't read from the future(rw)
+- can't write if future has read/write(wr, ww)
+- thomas write rule
+- optimistic concurrency control
+  - read Phase
+  - validation Phase(three cases)
+  - write Phase(serial commits/parallel commits)
+- phantom problem(insert/delete)
+  - re-execute scans
+  - predicate locking
+  - index locking
+- isolation level
+  - serializable
+  - repeatable read(phantom read)
+  - read committed(non-repeatable read/phantom read)
+  - read uncommitted(dirty read/non-repeatable read/phantom read)
+
+### Multi-version concurrency control
+
+- read/write do not block each other
+- when write, create a version/when read, read the newest version
+
 # 项目思路
 
 ## 项目准备
@@ -367,7 +410,7 @@ flowchart
 ### Remove的case：
 
 - 考虑删除后的shrink
-- 不同于Insert，shrink只考虑global depth = local depth的情况，因此对应的另一个bucket有且只有一个
+- 不同于Insert，shrink~~只考虑global depth = local depth的情况~~(不能加这个限制条件，否则可能都是空桶但仍然无法shrink)
 - why shrink: 当10指向的bucket为空时，就可以释放这个bucket并将此处索引映射到00的bucket，有两个位置指向同一个bucket，因此减小local depth
 - 当且仅当所有local depth小于global depth时，才会进行shrink
 - 不同于Insert，shrink减小global depth，不用再进行额外的元数据操作
@@ -440,3 +483,64 @@ flowchart
 <p align="center">
     <img src="/imgs/image-20240313164429.png"/>
 </p>
+
+## P3. Query Execution
+
+有几个概念还是很抽象的：
+
+- plan node，查询节点，包含expression用以构造tuple
+- schema，生成tuple的列名
+- executor，算子，通过next返回处理过的tuple
+- catalog，存储数据库的元数据
+- expression，通过evaluate返回Value
+
+查询逻辑为：
+
+- Parser，将sql语句解析为语法树
+- Binder，根据语法树绑定为数据结构，这样才可以通过编程语言的方式进行控制
+- Planner，生成查询节点（通过explain查看得到的
+- Optimizer，根据规则优化查询节点
+- Executor，执行查询
+
+整个执行过程是iterator的（pull-based的火山模型）
+
+优化器是从children开始优化的
+
+实验中许多情况默认内存可以放下数据，这样代码更好写，否则就要考虑partitioned hash了
+
+### Task1
+
+- 优化器会将filter执行器优化至seqscan中
+- 源代码已解决Halloween problem:
+
+```cpp
+// When creating table iterator, we will record the maximum RID that we should scan.
+// Otherwise we will have dead loops when updating while scanning. (In project 4, update should be implemented as
+// deletion + insertion.)
+RID stop_at_rid_;
+```
+
+- 通过列名比较索引的列和filter的列是否相等(索引的列名还要拼接表名)
+- 因为只要求对`where v = 1`的情况优化为index scan，所以只用比较一个列
+
+### Task2
+
+- Aggregate key 对应的是 group by 得到的列值
+- Aggregate value 对应的是通过expr得到的value(例如sum()得到的就是tuple那一列的值，count()得到的就是1)
+- 两者通过std哈希表映射（不考虑内存放不下的情况）
+- count\* 与 count(col) 的区别在与后者只统计非空值
+
+### Task3
+
+- 哈希表的value记录多个Tuple values/RID(late materialization)
+- 如果是left join，把右表作为outer table
+- 优化器实现中，使用递归处理相对更易编写
+
+### Task4
+
+- 使用优先队列进行topk优化（比如要获得k个最大值，则创建最小堆，复杂度为nlogk）
+- window function中注意rank，如果两个tuple根据order by的值相等，则rank不增加；如果没有order by，则都是1
+
+### 优化
+
+// TODO
