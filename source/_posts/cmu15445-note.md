@@ -237,10 +237,42 @@ flowchart LR
   - read committed(non-repeatable read/phantom read)
   - read uncommitted(dirty read/non-repeatable read/phantom read)
 
-### Multi-version concurrency control
+## Multi-version concurrency control
 
 - read/write do not block each other
 - when write, create a version/when read, read the newest version
+- snapshot isolation(write skew anomaly)
+
+### mvcc design decisions
+
+- concurrency control protocol: timestamp/occ/2pl
+- version storage:
+  - append-only(old-new chain/new-old chain)
+  - time-travel
+  - delta
+- garbage collection:
+  - tuple level
+  - transaction level
+- index management
+  - secondary indexes
+  - logical pointers/physical pointers
+  - duplicate key
+- deletes
+  - deleted flag
+  - tombstone tuple
+
+## Logging
+
+- system failures: software / hardware
+- steal policy/force policy
+- shadow paging
+- write-ahead log: steal + no force
+- logging schemes: physical/logical/physiological
+- checkpoints
+
+## Recovery
+
+- aries
 
 # 项目思路
 
@@ -544,3 +576,89 @@ RID stop_at_rid_;
 ### 优化
 
 // TODO
+
+## P4. Concurrency Control
+
+- 实验要求的是MVOCC，乐观锁，即后处理冲突
+- 除bonus task外，要求的隔离级别为snapshot-isolation，此隔离级别需要解决dirty read/non-repeatable read问题
+- 实验通过记录时间戳的方式解决以上问题
+
+### Task1
+
+这一部分负责安排分配时间戳
+
+- watermark返回所有运行中txn的最小read_ts，通过map记录所有的read_ts，可以在commit/abort txn后快速找到下一个最小的read_ts
+- begin txn 不需要增加ts，commit需要，因为同一时刻只能有一个txn commit，而begin没有限制
+
+### Task2
+
+这一部分安排seq scan的事务操作(相当于读操作)
+
+- tableheap中（即磁盘上）是最新的记录，而undo日志记录**ts时刻**的tuple记录(增量记录)
+- reconstruct 的作用即把最新的tuple回退到以前的tuple
+- 检查重构的tuple是否处于删除状态
+- ~~需要重新修改commit操作，将table heap中的ts更新~~
+- 注意read_ts为0时对应的undo log
+- 只有两种情况需要回退：
+
+  ```
+  // 1. the newest is not commited and the cur txn is not the newest's txn(not commited, not visible)
+  // 2. commited. but can't read from future
+  ```
+
+### Task3
+
+- 写冲突：
+  - 最新版本已经commit，但写操作发生在一个之前的版本
+  - 最新版本未commit，当前事务并非此事务
+  - 若发生写冲突，则设置为tainted并抛出异常
+- 可以使用UpdateTupleInplace，因为此部分规定类型尺寸是固定的
+- 注意undo log是增量记录，如果将1改为2又改回1，依然认为此列被修改
+- catalog 有个 gettablenames 的接口来获得所有table
+
+### Task4
+
+- 删除tuple并不会删除主键，所以版本链中存在tuple删了又有的情况
+- 为什么不删主键呢，因为index scan需要主键查找到以前的版本
+- 更新时如果主键也被更新，先将所有涉及到的tuple mark为delete再进行更新
+- 由于hash index只支持点查询，所以很多情况不用考虑(Halloween problem)
+- 如果是在主键上进行update，先delete所有，再update
+- 如果将主键列的值全改为一个相同的值，此时需要抛出异常
+- 并发中，存在多个事务同时update同一个tuple的情况(并发下，不能仅仅通过ts\_考虑冲突，如果不加锁，肯定存在绕过if的情况)
+  - 主要冲突在于版本链（所有的读取都是依赖于Heap上的值/undo log）
+  - 务必在更新heap之前，先处理好版本链的更新，在版本链的更新中处理好冲突
+  - 更新版本链无外乎两种情况：append新的log，modify之前的log
+  - 注意这里的冲突讨论的都是逻辑冲突，和操作相关的内存冲突已经通过latch避免
+  - `UpdateUndoLink->UpdateVersionLink`, `GetUndoLink->GetVersionLink`
+  - 利用check和in_progress进行保护，在commit时修改inprogress（同时注意修改应该保持原子性
+  - 如果发生写冲突，但是如果正在处理的事务commit后的ts仍小于另一个事务的readts，此时不应直接abort
+
+### Bonus
+
+// TODO
+
+### Result
+
+实现abort的最简单逻辑后就可以减少bench1test的很多冲突，从结果来看实现bonus(通过bench2test)的人数并不多
+
+<p align="center">
+    <img src="/imgs/image-20240331183037.png"/>
+</p>
+
+## All result
+
+不算bonus勉强通关吧、
+
+也算是第一次从头到尾刷完国外CS的课，相见恨晚
+
+<p align="center">
+    <img src="/imgs/image-20240331183341.png"/>
+</p>
+
+花费时间在一个月左右，外加本校课程作业压力
+
+虽然有很多时间花费在一些很搞笑的bug上...
+
+<p align="center">
+    <img src="/imgs/image-20240331183730.png"/>
+</p>
