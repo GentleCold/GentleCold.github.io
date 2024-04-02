@@ -272,7 +272,59 @@ flowchart LR
 
 ## Recovery
 
-- aries
+- algorithm for recovery and isolation exploiting semantics(ARIES)
+- steal/no force
+- log sequence number
+  - log - LSNs
+  - disk - pageLSNs
+  - dram- flushedLSNs
+- for redo: compensation log records
+- for checkpoints: active transaction table/ dirty page table
+- fuzzy checkpoints
+- ARIES
+  - 1. analysis
+  - 2. redo
+  - 3. undo
+
+## Distributed databases
+
+- parallel vs distributed
+- shared nothing
+- shared disk
+- homogenous node/heterogenous node
+- vertical partition/horizontal partition
+- consistent hashing
+- transaction coordination
+  - centralized/decentralized
+- distributed concurrency control
+
+## Distributed OLTP
+
+- replication
+- primary-replica/multi-primary
+- k-safety
+- propagation scheme
+  - synchronous
+  - asynchronous
+- atomic commit protocol
+- paxos
+- CAP / PACELC
+- google spanner
+
+## Distributed OLAP
+
+- star schema
+- snowflake schema
+- push query to data/pull data to query
+- query fault tolerance
+- cloud systems
+- data lakes
+
+## Vector database
+
+- vector index
+- inverted file
+- hierarchical navigable small world
 
 # 项目思路
 
