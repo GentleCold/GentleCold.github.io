@@ -2,7 +2,7 @@
 title: CMU15445-Fall2023课程笔记
 category: [笔记]
 date: 2024-02-22 17:37
-tags: [笔记, CMU15445, 数据库]
+tags: [笔记, CMU, 数据库]
 ---
 
 # 课程笔记
@@ -345,8 +345,6 @@ set(CMAKE_C_COMPILER "/usr/bin/clang")
 set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
 ```
 
-~~nmd这玩意儿要写在project后面谁跟我说要写在前面的？？~~
-
 这玩意儿放的位置很迷
 
 ## P0. C++ Primer
@@ -683,7 +681,8 @@ RID stop_at_rid_;
   - 注意这里的冲突讨论的都是逻辑冲突，和操作相关的内存冲突已经通过latch避免
   - `UpdateUndoLink->UpdateVersionLink`, `GetUndoLink->GetVersionLink`
   - 利用check和in_progress进行保护，在commit时修改inprogress（同时注意修改应该保持原子性
-  - 如果发生写冲突，但是如果正在处理的事务commit后的ts仍小于另一个事务的readts，此时不应直接abort
+  - 如果发生写冲突，~~但是如果正在处理的事务commit后的ts仍小于另一个事务的readts~~这种情况不可能发生，此时不应直接abort
+  - UpdateVersionLink成功后需要再次检查写写冲突（如果有个事务提交了）
 
 ### Bonus
 
