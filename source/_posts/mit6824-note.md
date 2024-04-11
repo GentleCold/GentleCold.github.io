@@ -34,6 +34,31 @@ tags: [笔记, MIT, 数据库, 分布式]
 - remote procedure call
 - client -> stub -> stub -> server
 
+## GFS
+
+About GFS: https://zhuanlan.zhihu.com/p/354450124
+
+- fault tolerance -> replication -> consistency
+- ideal consistency
+- gfs: big/fast/global
+- gfs client/master/chunkserver
+- master
+  - filename -> array of chunk handles
+  - chunkhandle -> version number/list of chunk servers
+  - log + checkpoints
+- relax consistency model
+  - if some success, but some is error. Retry, but the success will write twice
+
+## Primary/backup replication
+
+About VM-FT: https://www.cnblogs.com/brianleelxt/p/13245754.html
+
+- state transfer / replicated state machine(physical/logical)
+
+## Raft
+
+About Raft: https://www.cnblogs.com/brianleelxt/p/13251540.html
+
 # 项目思路
 
 ## MapReduce
