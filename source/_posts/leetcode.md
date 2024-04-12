@@ -398,6 +398,10 @@ using namespace std;
 - `dp[i] = max(dp[i], max((i - j) * j, dp[i - j] * j));`
 - 对i-j不拆分/拆分
 
+### 96. 不同的二叉搜索树(2024-04-12)
+
+- `dp[i] += dp[j] * dp[i - 1 - j];`
+
 # 第二章 LeetCode HOT100
 
 ### 3 无重复字符的最长子串(2024-02-21)

@@ -57,7 +57,11 @@ About VM-FT: https://www.cnblogs.com/brianleelxt/p/13245754.html
 
 ## Raft
 
-About Raft: https://www.cnblogs.com/brianleelxt/p/13251540.html
+About Raft:
+
+- https://www.cnblogs.com/brianleelxt/p/13251540.html
+- https://www.cnblogs.com/xybaby/p/10124083.html
+- https://docs.qq.com/doc/DY0VxSkVGWHFYSlZJ
 
 # 项目思路
 
