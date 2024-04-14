@@ -63,6 +63,11 @@ About Raft:
 - https://www.cnblogs.com/xybaby/p/10124083.html
 - https://docs.qq.com/doc/DY0VxSkVGWHFYSlZJ
 
+- prev pattern: single point of failure
+- majority rule
+- no split brain(using term) / maybe split vote(using election timeouts)
+- logs may cliverge
+
 # 项目思路
 
 ## MapReduce
