@@ -9,6 +9,8 @@ tags: [Raft, 数据库, 分布式]
 
 https://pdos.csail.mit.edu/6.824/papers/raft-extended.pdf
 
+本文仅记录个人学习的见解，与原文搭配更佳，如有错误，欢迎指正
+
 # 1 Raft 介绍
 
 作为共识算法，Raft有三个特性：
@@ -123,4 +125,78 @@ Raft算法通过给选举添加限制来保证被选举的Leader包含之前所�
 
 如图所示，\(c\)中的2并未被commit，只有(e)才能被commit，此时S5无法被选举成功。当然也有别的办法判断2是否应该被commit，或者直接更新这个Log的Term，但Raft中Leader不会更改旧的Log，只是Append。Raft为保持简单使用了保守的策略，虽然这样可能会导致发出2命令的客户端等待更长的时间
 
-### 5.4.3
+### 5.4.3 Safety argument
+
+回顾一下raft保证的五个性质：
+
+<p align="center">
+<img src="/imgs/image-20240415150156.png"/>
+</p>
+
+- 一次最多只能选举出一个Leader
+- Leader只Append自己的log
+- 如果两个Log的index和term相同，则此前的所有Log都相同
+- 如果一个Log在Term中被committed，那之后Term的Leader一定包含此Log
+- 如果Server应用了Log，那么不会有别的Server在此index处应用其他Log
+
+此节用反证法证明第四点。考虑一种情况(即上上张图情况e)，旧Leader commit了一个Log，此时有个不包含此Log的节点发起了选举，由于它需要获得多数投票，而commit的Log也被多数节点存储了，因此candidate若想胜任一定需要一个存储此Log的节点的赞同，但根据之前的限制，此时的投票被拒绝，因此不会变为Leader
+
+证明了第四点也即证明了第五点，只要server是按照index的顺序应用Log
+
+## 5.5 Follower and candidate crashes
+
+- RPC是幂等的
+- 若失败则无期限重试
+
+## 5.6 Timing and availability
+
+为保证可行性，Election timeout 至少要大于等于RPC时间，小于等于机器故障间隔
+
+# 6 Cluster membership changes
+
+此节介绍如何在运行时更改配置(改变节点数量，替换fail的节点等)。通过发送包含配置的Log来应用配置。节点会使用最新的配置，尽管这个配置可能没有commit
+
+要更改配置，首先发送结合新旧配置的Log，来达到joint consensus的效果，旧配置可能包含一部分Server，新配置可能包含另一部分Server，而Joint consensus情况下：
+
+- Log会复制给所有的Server
+- 无论是新旧配置中的Server都可以成为Leader
+- majority的条件变为旧配置的Server中达到majority并且在新配置中也达到majority
+
+具体做法如图：
+
+<p align="center">
+<img src="/imgs/image-20240415220509.png"/>
+</p>
+
+先发送$C_{old,new}$直到其被commit，然后发送$C_{new}$直到被commit，至此完成配置转换，同时：
+
+- 新加入的Server因为未包含Log导致需要一段时间才能catch up。可以先把它作为被复制的对象加入但是不考虑其为Majority
+- Leader可能在新配置中被删除，此时在新配置被commit后删除Leader。所以存在一段时间Leader不考虑自身为majority，但是仍然处理Log
+- 新配置中被删除的节点因为不会再收到心跳所以会发起选举，可能会导致当前leader变成follower。为解决这个问题，如果在一段时间内接受过心跳，就认为Leader存在，此时拒绝投票
+
+# 7 Log compaction
+
+raft通过snapshot的方式进行Log压缩。sanpshot将包含所有状态的值以及last included index/term
+
+leader可能已经通过snapshot删除了部分Log，为了让slow follower保持一致，引入InstallSnapshot RPC，直接复制snapshot
+
+考虑谁以及何时触发压缩。follower和leader都可以触发，也可以只有leader触发，但是会导致大量复制snapshot的时间。时间上一般是Log达到一个固定的大小后触发压缩。
+
+另一个问题是写入快照的性能的问题，可以利用cow，在内存中写入
+
+# 8 Client interaction
+
+客户端首先随机选择节点发送命令，若不是leader则拒绝，并返回这个节点所知道的leader。
+
+为避免重复执行命令，客户端为每个命令赋予独特标识
+
+对于客户端来说，Raft将保证线性一致性:
+
+- 为避免读到旧数据(试想有两个leader，其中一个是挂了重启的)，让leader给majority发送心跳后再返回读数据
+- 为避免脏读（上任的Leader可能包含未commit log），让leader上任后首先commit这一任期下no-op的log
+
+# 总结
+
+后续为实验以及性能上的评估。设计了实验验证raft可理解性比paxos更好，并且性能与其差不多。但是强leader性质仍然会限制一些性能，Raft仍有可改进的地方（用batching提高并行）
+
+最后可以看看可视化raft来加深理解：https://raft.github.io/
