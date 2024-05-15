@@ -85,6 +85,10 @@ Id Path           single   DUP      DUP      Unallocated Total     Slack
 optimus-manager --switch integrated/nvidia
 ```
 
+参考自万能的ArchLinux社区：
+
+https://bbs.archlinux.org/viewtopic.php?id=269052
+
 # 更新过程中突然退出到窗口管理器界面
 
 有时候滚动更新，突然退出到窗口管理器界面，此时一定不能关闭或重启电脑，可能是内核构建一半失败导致的，关电脑就寄了
