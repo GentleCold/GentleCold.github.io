@@ -111,3 +111,7 @@ Rehash分为三步：
 - 初始化：创建后台线程，翻倍当前哈希表（从tag借用一位过来），然后创建一个rehash node，包含两个rehash child item。
 - 分割： 通过tag范围将环分割为两个子环，此时既可通过旧哈希表访问也可以通过新哈希表访问
 - 删除：将rehash node删除，并将环首尾相接，回收旧哈希表，在完成此步之前需要确保所有对旧哈希表的访问已经结束
+
+# 4 复现
+
+关于项目复现参见：https://github.com/GentleCold/hotring_kv

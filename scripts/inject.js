@@ -11,14 +11,14 @@ hexo.extend.injector.register(
   "archive",
 );
 
-hexo.extend.injector.register(
-  "body_end",
-  '<script type="text/javascript" src="/js/particles.min.js"></script>',
-  "default",
-);
-
-hexo.extend.injector.register(
-  "body_end",
-  '<script type="text/javascript" src="/js/partical.js"></script>',
-  "default",
-);
+// hexo.extend.injector.register(
+//   "body_end",
+//   '<script type="text/javascript" src="/js/particles.min.js"></script>',
+//   "default",
+// );
+//
+// hexo.extend.injector.register(
+//   "body_end",
+//   '<script type="text/javascript" src="/js/partical.js"></script>',
+//   "default",
+// );
