@@ -109,3 +109,38 @@ Reduce读取这个桶下的所有中间文件，将所有KeyValue对按照Key排
 任务的容错处理比较简单，只要10s内没有结果就再安排一次任务，这样可能多个Worker同时执行同一个任务，由于Map中间文件名已经通过Worker编号标识，并且Coordinator只认首次完成成功的结果，所以不会造成冲突，而对于Reduce来说，由于每次Reduce的结果都一样，可能有多个Reduce同时写一个输出文件，但是结果不会受到影响
 
 `sh test-mr-many.sh 500` 运行500次没出现故障
+
+## Raft
+
+实验仅需修改`raft.go`文件，测试代码位于`raft/test_test.go`
+
+### Part A: leader election
+
+阅读测试代码，首先根据论文图2完善raft相关结构，然后在Make函数中进行初始化。
+
+另外由于测试要求1s不超过几十次心跳发送，所以设置心跳发送间隔为100ms，选举超时设置为300\~600ms，同时设置ticker每10ms检查是否需要进行选举。
+
+具体步骤为，ticker每10s检查超时，如果超时则变为candidate，重置时间，给自己投票，然后广播发起选举，为每个节点启动一个goroutine，发起RequestVote RPC调用，见函数handleRequestVote
+
+在handleRequestVote中，处理RPC调用的reply，如果得票超过半数，则变为leader，否则如果遇到新的term，则从candidate变为follower。变为leader后启动heartbeat goroutine。
+
+在heartbeat中，每100s为每个节点启动一个goroutine，发送不包括entries的AppendEntries RPC调用，见函数handleAppendEntries。
+
+在handleAppendEntries中，处理RPC调用的reply，如果遇到新的term，则从leader变为follower。
+
+函数调用关系为：
+
+```mermaid
+flowchart
+    ticker --> handleRequestVote --> heartbeat --> handleAppendEntries
+```
+
+然后就是RPC函数过程，对于RequestVote来说，如果request的term更大，则更新状态（follower，term），同时重置超时时间，返回voteGranted为true，否则只返回false
+
+对于AppendEntries来说，如果request的term更大或相等，则更新状态（follower，term），同时重置超时时间，返回success为true，否则只返回false。
+
+测试结果如下：
+
+<p align="center">
+    <img src="/imgs/image-20240829230750.png"/>
+</p>

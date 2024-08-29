@@ -143,6 +143,8 @@ Raft算法通过给选举添加限制来保证被选举的Leader包含之前所�
 
 证明了第四点也即证明了第五点，只要server是按照index的顺序应用Log
 
+另外对于网络分区导致的两个leader问题，因为选取出了新的leader，majority节点的任期会更新，所以在网络恢复时旧leader会变为follower
+
 ## 5.5 Follower and candidate crashes
 
 - RPC是幂等的
@@ -188,11 +190,11 @@ leader可能已经通过snapshot删除了部分Log，为了让slow follower保�
 
 客户端首先随机选择节点发送命令，若不是leader则拒绝，并返回这个节点所知道的leader。
 
-为避免重复执行命令，客户端为每个命令赋予独特标识
+为避免重复执行命令，客户端为每个命令赋予独特标识，由状态机记录
 
 对于客户端来说，Raft将保证线性一致性:
 
-- 为避免读到旧数据(试想有两个leader，其中一个是挂了重启的)，让leader给majority发送心跳后再返回读数据
+- 为避免读到旧数据(试想有两个leader，其中一个是挂了重启的)，让leader起码一次获得majority返回后再返回读数据
 - 为避免脏读（上任的Leader可能包含未commit log），让leader上任后首先commit这一任期下no-op的log
 
 # 总结
@@ -200,3 +202,5 @@ leader可能已经通过snapshot删除了部分Log，为了让slow follower保�
 后续为实验以及性能上的评估。设计了实验验证raft可理解性比paxos更好，并且性能与其差不多。但是强leader性质仍然会限制一些性能，Raft仍有可改进的地方（用batching提高并行）
 
 最后可以看看可视化raft来加深理解：https://raft.github.io/
+
+具体的实现可见MIT6824的笔记
