@@ -131,7 +131,7 @@ Reduce读取这个桶下的所有中间文件，将所有KeyValue对按照Key排
 函数调用关系为：
 
 ```mermaid
-flowchart
+flowchart LR
     ticker --> handleRequestVote --> heartbeat --> handleAppendEntries
 ```
 
@@ -143,4 +143,65 @@ flowchart
 
 <p align="center">
     <img src="/imgs/image-20240829230750.png"/>
+</p>
+
+### Part B: log
+
+首先考虑raft算法本身，一个index和term唯一确定一个log，已经commit的log不会丢失，已经apply的log不会在此处被其他节点apply到不一致的log，rpc的调用是幂等性的
+
+在代码编写过程中可以多考虑一下是否满足了这些条件，考虑一下leader/follower/candidate的宕机或者网络分区是否会破坏这些要求
+
+本部分的重点是nextIndex和matchIndex，leader将根据这两个属性来进行节点共识处理
+
+#### rpc struct
+
+首先根据论文完善rpc相关结构
+
+其中对于属性nextIndex[]和matchIndex[]：这两个属性由leader节点管理，前者记录每个节点下一个需要的log的index，后者记录每个节点与leader匹配的最大的log的index，在理想情况下，这两个数组实际是一样的，问题发生在重新选出leader时，前者将初始化为leader的最大的logIndex，而后者将从0开始往后递增。从作用上来看，leader根据前者找到prevLog进行一致性检验，根据后者判断majority的log复制，来更新commitIndex
+
+#### basic process
+
+客户端将从Start函数处提出请求，然后又raft来达成共识，如果当前节点是leader，此函数会在本地增加log，并立即返回。之后将进行共识，不保证一定达成共识。
+
+修改heartbeat函数，原先发送的AppendEntries的entries默认为空，但此时会根据对应节点的nextIndex的值发送从此处开始之后所有的log，同时根据此值确定prevLogIndex和prevLogTerm，以进行一致性检查。如果nextIndex和leader的log长度一致，则不需要发送log，保持发送心跳，但仍要进行一致性检查。
+
+修改AppendEntries函数，添加一致性检查的过程，分为三种情况：
+
+- prevLogIndex处没有log，返回false
+- log为空或者一致性检查成功，进行append操作，返回true
+- 一致性检查失败，返回false
+
+需要在进行append时确保覆盖操作，即覆盖PrevLogIndex之后所有的log为leader的log
+
+对于leader，根据reply的success判断日志复制是否成功，如果成功，更新nextIndex和matchIndex，如果失败，更新nextIndex为不一致的位置
+
+另外修改投票逻辑，选出的新leader需要重置nextIndex和matchIndex
+
+#### commit and apply
+
+对于leader，在每一次日志复制成功后将检查matchIndex，即找到最大的index，使得log[index].Term为当前term（对应论文5.4.2要求commit当前任期下的log才能commit之前的log），并且matchIndex数组中的大多数大于等于index（注意这里不用考虑leader本身的matchIndex），则可更新commitIndex为index
+
+对于follower，在AppendEntries中，当且仅当成功进行日志复制，即完成同步，才更新commitIndex为min（len(log), LeaderCommit)
+
+对于所有节点，apply的过程放在ticker函数中，即每10ms检查一次LastApplied和CommitIndex，将尚未应用但已提交的log通过applyCh通道传递来表示应用到状态机
+
+#### election restriction
+
+为避免论文5.4.1所说的问题，添加选举限制，即选举时多传一份LastLogIndex和LastLogTerm，当且仅当candidate的log比follower的新才能获得选票（term大的或者term相同时，index大的），来确保不让log不一致的节点当选leader覆盖掉已经commit的log
+
+#### fast rollback
+
+在原先leader处理日志复制失败的情况时，是一个log一个log回退的，如果出现大量不一致log会导致效率下降（尽管这种情况实际很少发生），为提高效率可以根据不一致log的term来回退
+
+为此需要在AppendEntries的返回中增添两个属性ConflictIndex和ConflictTerm，考虑复制失败中的两种情况：
+
+- prevLogIndex处没有log，更新ConflictIndex为本地最后一个log位置
+- 一致性检查失败，更新ConflictIndex为冲突log的任期下的第一个log位置
+
+leader处理失败时，可以直接更新nextIndex为ConflictIndex，也可以确认此处log的term是否为ConflictTerm，如果是则表示这里已经一致了，就nextIndex++，直到找到不一致的地方，这样可以避免多传输不必要的log
+
+测试结果如下：
+
+<p align="center">
+    <img src="/imgs/image-20240901181858.png"/>
 </p>
