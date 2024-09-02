@@ -171,7 +171,9 @@ flowchart LR
 - log为空或者一致性检查成功，进行append操作，返回true
 - 一致性检查失败，返回false
 
-需要在进行append时确保覆盖操作，即覆盖PrevLogIndex之后所有的log为leader的log
+需要在进行append时确保覆盖操作，即覆盖PrevLogIndex之后所有的log为leader的log，但同时要注意忽略已经复制的log
+
+> 有一种极端情况，leader发送了两个AppendEntries RPC，前者需要复制log1，后者需要复制log1和log2，由于种种原因，第二个rpc先得到处理和返回，而第一个rpc后到，我们需要保证如果log2被commit了，后到的rpc不会导致log2丢失。通过检查传输的entries是否和follower的log有不一致（只需检查最后一个entries），如果有，则进行正常的截断合并，否则不进行截断，这样可以同时确保不一致的log被丢失，一致的log不被覆盖。此时还要考虑nextIndex的更改，如果复制成功，nextIndex一定不会减少。当然也可以不管nextIndex，只要确保commit的log不会丢失就行
 
 对于leader，根据reply的success判断日志复制是否成功，如果成功，更新nextIndex和matchIndex，如果失败，更新nextIndex为不一致的位置
 
@@ -205,3 +207,40 @@ leader处理失败时，可以直接更新nextIndex为ConflictIndex，也可以�
 <p align="center">
     <img src="/imgs/image-20240901181858.png"/>
 </p>
+
+### Part 3C: persistence
+
+B部分只考虑了网络分区的影响，此部分进一步考虑节点的宕机问题，需要存储状态，包括currentTerm和log[]，前者用来确保一个任期只有一个leader，后者用来为复制状态机提供数据回滚，即重新应用。而剩余的任何属性均不需要持久化。
+
+代码使用Persister模拟磁盘交互，一般为需要持久化的数据，在每次更改时写入磁盘，在重启时读取数据即可
+
+另外考虑到此部分的测试代码将更加严格，就算之前的测试能够通过，此处也不能保证百次测试都通过，本人遇到的问题有：
+
+- 注意重复/过期/乱序RPC的情况，主要是确保已经commit的log不被截断丢失，并且log的term必须是单调递增的。同时注意忽略过期处理的term，以防过期的term让不该当选的节点当选
+- 注意重置选举超时的时机，变为follower后要记得重置
+- 调整心跳间隔为50ms，选举超时为150ms-300ms
+- 在leader当选后先共识一份空log，来让之前未提交的log能够提交
+
+### Part 3D: log compaction
+
+考虑到每次重启都要重新应用log，为提高效率，为状态机状态建立快照，从而压缩log
+
+首先完善SnapShot函数，其由server定期调用，建立快照并交由raft进行持久化处理，raft在收到后需要根据快照包含的最后一个log的信息来移除已经被快照包含的log
+
+> 潜在的死锁问题：在应用log时，如果一次性应用多个log，即向applyCh传递多个msg，由于3D中的测试会在取出一个后调用SnapShot函数，而SnapShot需要获取锁，然而此时`applyCh<-msg`仍处于阻塞状态，从而无法释放锁。解决办法是一次只apply一个log
+
+由于之前使用切片来存储，建立快照后需要考虑下标问题，为此我们需要更改之前所有涉及到log下标的地方
+
+> 实际是在逻辑上将log分为两部分，一部分是快照，一部分是log，log的下标是不变的，但是物理上访问log切片需要根据snapshot.lastIncludedIndex更改下标
+
+另外还需要注意lastLogIndex等参数的改变，需要根据snapshot分情况讨论
+
+另外为AppendEntries增加逻辑，如果因为PrevLogIndex包含在snapshot中所以找不到或者snapshot的一致性检验失败，说明follower的所有log都不匹配，设置conflictIndex为0后返回false
+
+而在心跳中，如果发现nextIndex小于snapshot的lastIncludedIndex，则说明需要发送快照，即InstallSnapshot RPC
+
+对于InstallSnapshot RPC，同样要注意RPC的幂等性，通过检查follower在lastIncludedIndex处的term是否和snapshot的Term匹配来决定log的保留。接收返回后，更新nextIndex和matchIndex
+
+### 最终结果
+
+1000次批量测试ing...
