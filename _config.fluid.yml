@@ -1012,6 +1012,12 @@ links:
       link: "https://www.zywvvd.com",
       avatar: "https://www.zywvvd.com/image/avatar.png"
     }
+    - {
+      title: "小大人",
+      intro: "一蓑烟雨任平生",
+      link: "https://zepengli111.github.io/",
+      avatar: "https://zepengli111.github.io/img/avator.jpg"
+    }
 
   # 当成员头像加载失败时，替换为指定图片
   # When the member avatar fails to load, replace the specified image
