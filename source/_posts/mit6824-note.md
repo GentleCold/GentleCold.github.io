@@ -260,3 +260,48 @@ B部分只考虑了网络分区的影响，此部分进一步考虑节点的宕�
 <p align="center">
     <img src="/imgs/image-20240903162709.png"/>
 </p>
+
+潜在bug：
+
+- appendEntries时传递的log如果只是通过切片获取的话，实际只是获得了引用，或造成潜在的冲突，需要使用copy
+
+## Fault-tolerant Key/Value Service
+
+此实验将完成raft算法和客户端的交互，实现一个线性化的分布式键值服务
+
+另外和lab2一样，此处认为一个client一次发送一个请求，不同client间并发发送请求
+
+### Part A: Key/value service without snapshots
+
+首先考虑基本的流程，客户端先随机找一个server发送rpc，服务端收到后，如果是leader则进行共识流程，否则返回其所知道的leader，下一次客户端选择这个server，如果超时则随机再找一个server
+
+另外server将启动一个后台的应用进程，在受到applyMsg后进行应用
+
+我们需要解决两个主要问题：
+
+- 如何确定操作完成了共识？一开始是判断LastApply是否超过这个log的index，超过了说明操作已经完成，但这样是有问题的，因为这个index上的log可能会变成别的操作。实际使用clientId+seqNum作为Uuid，可以通过管道，为每个index分配一个管道，如果完成apply则发送log的Uuid进行唤醒和判断。也可以通过记录uuid是否被共识来过滤一部分重复，同时还要注意设置超时，以防无法共识造成阻塞。
+- 如何过滤重复操作？首先不能在rpc处过滤，因为重复append是不可避免的。可能已经完成了共识但是client没有收到，然后在另一个server又发了一遍，也可能没有完成共识，需要再次append log。所以只能在apply端通过uuid过滤重复
+
+实验没有考虑只读优化，直接将get操作作为一个log进行共识
+
+最后注意server关闭时applyCh阻塞造成goroutine泄漏的问题（没有消费端，可以设置一个超时关闭）
+
+### Part B: Key/value service with snapshots
+
+这部分添加需要服务端手动在合适时机建立快照。
+
+实际只需要在状态机中收到applyMsg并应用后，判断raftstate是否超过maxsize，若超过则建立快照，需要保存当前的kv对信息以及过滤重复的表信息，然后调用Snapshot将快照传给raft层即可。
+
+但是如果leader一次性获取了大量的命令导致raftstate过大，这时没收到一个applyMsg就会建立一次快照，为了避免性能影响，可以要求必须在上一次建立快照时的index之后n个index后才能再次建立快照。
+
+这时server端就完成了，接下来是历史遗留问题，由于lab3中对snapshot的测试过于宽松导致许多问题在此暴露：
+
+- leader可能install新的snapshot给follower，所以follower的server在调用Snapshot传送快照时，不能让旧的snapshot覆盖掉新的
+- 同样在InstallSnapshot中，follower的snapshot可能比leader的新，这时旧的snapshot也不能覆盖新的，log也不能影响
+- 在AppendEntries中，如果遇到prevLog处于节点的snapshot内（同时发送了AppendEntries和InstallSnapshot RPC，后者先到达就会遇到这种情况），则不要更改log或是快照，返回false并且让nextIndex更新到len(log)+snapshot.Index，再重新进行一致性检查
+
+其实只要记住snapshot所包含的必须是已经apply的log，代表snapshot一定是一致的，所以旧的不能覆盖新的（导致log丢失），对snapshot不需要进行一致性检查，但是我之前误认为snapshot可能会不一致了
+
+### 最终结果
+
+1024次测试成功
