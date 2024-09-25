@@ -220,7 +220,7 @@ leader处理失败时，可以直接更新nextIndex为ConflictIndex，也可以�
     <img src="/imgs/image-20240901181858.png"/>
 </p>
 
-### Part 3C: persistence
+### Part C: persistence
 
 B部分只考虑了网络分区的影响，此部分进一步考虑节点的宕机问题，需要存储状态，包括currentTerm和log[]，前者用来确保一个任期只有一个leader，后者用来为复制状态机提供数据回滚，即重新应用。而剩余的任何属性均不需要持久化。
 
@@ -233,7 +233,7 @@ B部分只考虑了网络分区的影响，此部分进一步考虑节点的宕�
 - 调整心跳间隔为50ms，选举超时为150ms-300ms
 - 在leader当选后先共识一份空log，来让之前未提交的log能够提交
 
-### Part 3D: log compaction
+### Part D: log compaction
 
 考虑到每次重启都要重新应用log，为提高效率，为状态机状态建立快照，从而压缩log
 
@@ -305,3 +305,5 @@ B部分只考虑了网络分区的影响，此部分进一步考虑节点的宕�
 ### 最终结果
 
 1024次测试成功
+
+## Sharded Key/Value Service

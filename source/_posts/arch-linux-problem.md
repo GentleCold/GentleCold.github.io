@@ -98,3 +98,7 @@ https://bbs.archlinux.org/viewtopic.php?id=269052
 只要保证内核不挂，一般更新不会有啥问题
 
 除非供应链被污染或重大软件bug，此时直接回退版本
+
+# 挂载U盘
+
+插入u盘后，使用`lsblk`命令找到U盘设备，然后运行`sudo mount /dev/sdb1 /mnt`命令挂载，即可正常访问，写入数据需要sudo权限
