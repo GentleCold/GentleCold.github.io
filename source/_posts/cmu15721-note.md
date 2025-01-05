@@ -31,3 +31,28 @@ some papers that worth to read:
 - nested data in columns:
   - shredding
   - length + presence
+
+## Query Execution
+
+- three optimizations:
+  - data parallelization(vectorization)
+  - task parallelization(multi-threading)
+  - code specialization(pre compile / JIT)
+- process model
+  - iterator model
+  - materialization model
+  - vectorized / batch model
+    - may contain tuples that do not satisfy filters
+      - solution: offset or bitmaps
+- processing direction
+  - top to bottom(pull)(iterator model)
+    - easy to control output
+    - additional overhead because 'Next()'
+  - bottom to top(push)
+    - allow tighter control
+    - may not control intermediate result sizes
+    - difficult to implement some operators (sort merge join)
+
+## Query Execution II
+
+-
