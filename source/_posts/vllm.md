@@ -86,3 +86,63 @@ sparse attention类似于让Q只和部分K做计算，例如RetrievalAttention�
 <p align="center">
     <img src="/imgs/image-20250605214722.png"/>
 </p>
+
+## A Survey on Large Language Model Acceleration based on KV Cache Management
+
+用于LLM加速的缓存管理策略：
+
+- token-level：kv缓存的选择、预算分配、合并、量化、低秩分解
+- model-level：架构创新、kv重用
+- system-level：内存管理、调度和硬件感知
+
+kv缓存选择：
+
+- 静态（仅在预填充阶段进行token过滤）
+- 动态（在解码阶段持续更新）
+
+kv缓存预算分配
+
+kv缓存合并：
+
+- 层内合并
+- 夸层合并
+
+## KV压缩
+
+### SnapKV: LLM Knows What You are Looking for Before Generation
+
+同过观察窗口选择重要的token
+
+<p align="center">
+    <img src="/imgs/image-20250611205603.png"/>
+</p>
+
+### PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling
+
+<p align="center">
+    <img src="/imgs/image-20250611205645.png"/>
+</p>
+
+- 在模型的低层（例如第0层）中，注意力得分呈现近似均匀分布，这表明模型在较低层时从所有可用内容中全局聚合信息，而不会优先关注特定的段落。
+- 当编码信息进行到中间层（6-18）时，逐渐转变为聚焦在段落内部的注意力模式 (Localized Attention)。在这个阶段，注意力主要集中在同一文档内的Token上，表明模型在单个段落内进行了段落内部的信息聚合。
+- 这种趋势在上层（24-30）继续并加强，本文观察到了“Attention Sink”和“Massive Activation”现象。
+
+<p align="center">
+    <img src="/imgs/image-20250611205829.png"/>
+</p>
+
+为每层分配不同的缓存预算
+
+## KV复用
+
+层间复用：
+
+### KVSHARER: EFFICIENT INFERENCE VIA LAYER-WISE DISSIMILAR KV CACHE SHARING
+
+发现了一个违反直觉的现象：共享不相似的KV缓存能更好地保持模型性能。
+
+首先寻找共享策略，使用校准数据集，计算每层之间的kv缓存的欧氏距离然后降序排序，依次尝试替换相应的kv缓存，确保替换过程中模型的输出保持一致，最后得到不同层之间的共享策略应用于后续的所有推理任务。
+
+<p align="center">
+    <img src="/imgs/image-20250611212205.png"/>
+</p>
