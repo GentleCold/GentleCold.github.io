@@ -69,6 +69,10 @@ AlayaDB将KV缓存和稀疏注意力计算与LLM推理引擎解耦，提供了�
 
 然后使用基于规则的优化，根据prompt的上下文长度、GPU显存大小来决定使用哪种方式
 
+<p align="center">
+    <img src="/imgs/image-20250611222727.png"/>
+</p>
+
 ## CacheBlend: Fast Large Language Model Serving for RAG with Cached Knowledge Fusion
 
 sparse attention类似于让Q只和部分K做计算，例如RetrievalAttention通过对KVCache做检索来做到这一点，来减少QKV点乘的开销
@@ -146,3 +150,9 @@ kv缓存合并：
 <p align="center">
     <img src="/imgs/image-20250611212205.png"/>
 </p>
+
+## 调度
+
+- 前缀感知调度
+- 抢占式和公平导向的调度
+- 特定层和分层调度
