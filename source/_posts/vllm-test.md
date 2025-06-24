@@ -101,29 +101,77 @@ Total num output tokens: 4
 
 考虑prefill阶段，测试2的batchsize更大，不考虑prefix/kv cache复用的话，长prompt的prefill（n^2）肯定是没有多个短prompt（n）快的，测试1是没有优势的
 
-如果使用对文本的kvcache复用（可以重复交两个一样的请求，然后利用prefix机制来复用），此时在计算量上才能显现测试1的优势，因为测试1的prompt tokens数是小于测试2的
+如果使用对文本的kvcache复用（可以重复交两个一样的请求，然后利用prefix机制来复用），此时在计算量上才能显现测试1的优势，因为测试1的prompt tokens数是小于测试2的（basic prompt内部的交叉注意力会多次计算）
 
 但是考虑decode阶段，prompt越长qkv点乘计算越慢，所以测试1 decode阶段还是没有优势的
 
 #### 2.1.4 验证
 
-对于测试1和测试2，同时设置一个duplicate=10，表示一个请求重复提交10次，那么后9次都会使用prefix cache进行缓存复用，可以近似认为算出的吞吐量为完全复用时的吞吐量：
+对于测试1和测试2，同时设置一个duplicate=100，表示一个请求重复提交100次，那么后99次都会使用prefix cache进行缓存复用（同时避免basic prompt的复用，即只考虑文本块的复用），可以近似认为算出的吞吐量为完全复用时的吞吐量：
 
 ```bash
-10x duplication
+100x duplication
 测试1:
-Throughput: 0.20 requests/s, 23652.82 total tokens/s, 78.58 output tokens/s
-Total num prompt tokens:  1200060
-Total num output tokens:  4000
+Throughput: 2.47 requests/s, 297019.33 total tokens/s, 986.72 output tokens/s
+Total num prompt tokens:  12000700
+Total num output tokens:  40000
 
 测试2:
-Throughput: 503.24 requests/s, 163025.79 total tokens/s, 503.24 output tokens/s
-Total num prompt tokens:  1291800
-Total num output tokens:  4000
+Throughput: 703.70 requests/s, 229369.89 total tokens/s, 703.70 output tokens/s
+Total num prompt tokens:  12998000
+Total num output tokens:  40000
 ```
 
-说明如果能完全复用kv cache的话，测试1的吞吐量是更有优势的，但是decode的吞吐量还是比不过测试2
+说明如果能完全复用kv cache的话，测试1的吞吐量是更有优势的，但是decode没办法看出来，这里的output tokens计算方式是`output tokens / elapsed time`
 
 ### 2.2 在线吞吐量测试
 
-// TODO
+n = 400
+
+```bash
+测试1:
+============ Serving Benchmark Result ============
+Successful requests:                     1
+Benchmark duration (s):                  7.29
+Total input tokens:                      120006
+Total generated tokens:                  400
+Request throughput (req/s):              0.14
+Output token throughput (tok/s):         54.89
+Total Token throughput (tok/s):          16524.00
+---------------Time to First Token----------------
+Mean TTFT (ms):                          293.37
+Median TTFT (ms):                        293.37
+P99 TTFT (ms):                           293.37
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          17.52
+Median TPOT (ms):                        17.52
+P99 TPOT (ms):                           17.52
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           17.52
+Median ITL (ms):                         17.40
+P99 ITL (ms):                            19.57
+==================================================
+
+测试2:
+============ Serving Benchmark Result ============
+Successful requests:                     400
+Benchmark duration (s):                  4.84
+Total input tokens:                      129180
+Total generated tokens:                  400
+Request throughput (req/s):              82.71
+Output token throughput (tok/s):         82.71
+Total Token throughput (tok/s):          26794.76
+---------------Time to First Token----------------
+Mean TTFT (ms):                          2706.23
+Median TTFT (ms):                        2815.29
+P99 TTFT (ms):                           4828.05
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          0.00
+Median TPOT (ms):                        0.00
+P99 TPOT (ms):                           0.00
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           0.00
+Median ITL (ms):                         0.00
+P99 ITL (ms):                            0.00
+==================================================
+```
