@@ -124,6 +124,23 @@ Total num output tokens:  40000
 
 说明如果能完全复用kv cache的话，测试1的吞吐量是更有优势的，但是decode没办法看出来，这里的output tokens计算方式是`output tokens / elapsed time`
 
+如果是完全复用的话：
+
+```bash
+100x duplication
+测试1:
+Throughput: 2.50 requests/s, 301121.59 total tokens/s, 1000.35 output tokens/s
+Total num prompt tokens:  12000600
+Total num output tokens:  40000
+
+测试2:
+Throughput: 1465.77 requests/s, 476303.48 total tokens/s, 1465.77 output tokens/s
+Total num prompt tokens:  12958000
+Total num output tokens:  40000
+```
+
+此时又是测试2快
+
 ### 2.2 在线吞吐量测试
 
 n = 400
