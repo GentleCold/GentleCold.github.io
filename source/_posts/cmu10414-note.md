@@ -114,6 +114,168 @@ $$
 
 使用扩展计算图，可以方便计算梯度的梯度
 
+- broadcast to 操作(从后往前比较维度，扩展缺失的或者为1的维度)求梯度，需要对扩展方向求和
+- 求和操作求梯度，则使用broadcast to操作扩展为原shape
+- 多维矩阵乘法只看最后两个维度，前面的维度扩展为相同的批次
+
 ## fully connected networks
 
 - matrix broadcasting（does not copy any data）
+- Newton's Method
+- momentum
+
+  $$
+  \begin{align*}
+  u_t&=\beta u_{t-1} + (1-\beta) \Delta \\
+  \theta_t&=\theta_{t-1}-\alpha u_t
+  \end{align*}
+  $$
+
+- unbiased momentum terms 让步长一致
+
+  $$
+  \begin{align*}
+  u_t&=\beta u_{t-1} + (1-\beta) \nabla_\theta J(\theta_{t-1}) \\
+  \theta_t&=\theta_{t-1}-\alpha u_t/(1-\beta^{t})
+  \end{align*}
+  $$
+
+- nesterov momentum 在动量方向“未来位置”计算梯度，能提前感知参数更新后的地形，避免盲目跟随动量
+  $$
+  \begin{align*}
+  v_t &= \gamma v_{t-1} + \eta \nabla_\theta J(\theta_{t-1} - \gamma v_{t-1}) \\
+  \theta_t &= \theta_{t-1} - v_t
+  \end{align*}
+  $$
+- Adam
+<p align="center">
+    <img src="/imgs/image-20250626142953.png"/>
+</p>
+- weights initialization
+
+## neural network abstraction
+
+- caffe 1.0 / tensorflow (静态计算图) / pytorch (动态计算图)
+
+<p align="center">
+    <img src="/imgs/image-20250626161314.png"/>
+</p>
+
+## normalization and regularization
+
+- 深度网络的权重初始化很重要，会导致不同的激活方差，但是可以通过normalization修正
+- layer normalization / batch normalization
+
+<p align="center">
+    <img src="/imgs/image-20250701142605.png"/>
+</p>
+
+- batch normalization 导致依赖问题，训练时使用实际均值，测试时使用经验均值
+
+<p align="center">
+    <img src="/imgs/image-20250701143416.png"/>
+</p>
+
+- regularization 提高函数泛化性（模型参数数量大于样本数量
+- l2 regularization / weight decay，添加正则化项，约束参数大小
+
+<p align="center">
+    <img src="/imgs/image-20250701184447.png"/>
+</p>
+
+- dropout 随机将激活值置为0
+
+<p align="center">
+    <img src="/imgs/image-20250701185544.png"/>
+</p>
+
+提供了类似于SGD的近似：
+
+<p align="center">
+    <img src="/imgs/image-20250701185903.png"/>
+</p>
+
+## convolutional networks
+
+- convolutions / padding / strided convolutions / pooling / grouped convolutions
+- dilations
+<p align="center">
+    <img src="/imgs/image-20250701195206.png"/>
+</p>
+- 在自动微分中卷积梯度的中间结果较多，导致计算图较大，可以将卷积变为原子操作
+<p align="center">
+    <img src="/imgs/image-20250701204359.png"/>
+</p>
+
+- `Z = batch * height * width * cin, W = k * k * cin * cout`
+- im2col
+
+## hardware acceleration
+
+- vectorization 需要考虑内存对齐
+<p align="center">
+    <img src="/imgs/image-20250701205433.png"/>
+</p>
+
+- data layout and strides, strides 布局允许更灵活的数据变换（表示内存访问需要跳过的字节数
+
+$$
+a[i * strides[0] + j * strides[1]]
+$$
+
+- parallel for
+- matrix multiplication
+
+register tiled
+
+<p align="center">
+    <img src="/imgs/image-20250701213559.png"/>
+</p>
+
+cache line aware
+
+<p align="center">
+    <img src="/imgs/image-20250701214842.png"/>
+</p>
+
+both
+
+<p align="center">
+    <img src="/imgs/image-20250701215759.png"/>
+</p>
+
+why
+
+<p align="center">
+    <img src="/imgs/image-20250701215729.png"/>
+</p>
+
+## gpu acceleration
+
+- vector add
+
+<p align="center">
+    <img src="/imgs/image-20250701231414.png"/>
+</p>
+
+cpu side
+
+<p align="center">
+    <img src="/imgs/image-20250701231953.png"/>
+</p>
+
+- gpu memory
+
+<p align="center">
+    <img src="/imgs/image-20250701232628.png"/>
+</p>
+
+- window sum
+
+<p align="center">
+    <img src="/imgs/image-20250702185121.png"/>
+</p>
+
+- matrix multiplication
+
+## training large models

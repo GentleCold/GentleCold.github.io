@@ -141,6 +141,53 @@ Total num output tokens:  40000
 
 此时又是测试2快
 
+#### 2.1.5 打满batch
+
+```bash
+n = 400，文本块=4000(10prompt, 3m17s):
+Throughput: 0.05 requests/s, 5847.44 total tokens/s, 19.98 output tokens/s
+Total num prompt tokens:  1166840
+Total num output tokens:  4000
+
+n = 40，文本块=4000(100prompt, 53s):
+Throughput: 1.78 requests/s, 20903.28 total tokens/s, 71.27 output tokens/s
+Total num prompt tokens:  1169180
+Total num output tokens:  4000
+
+n = 20，文本块=4000(200prompt, 47s):
+Throughput: 4.04 requests/s, 23760.10 total tokens/s, 80.83 output tokens/s
+Total num prompt tokens:  1171780
+Total num output tokens:  4000
+
+n = 4，文本块=4000(1000prompt, 42s):
+Throughput: 22.09 requests/s, 26438.00 total tokens/s, 88.38 output tokens/s
+Total num prompt tokens:  1192580
+Total num output tokens:  4000
+
+n = 1, 文本块=4000(4000prompt, 43s):
+Throughput: 85.05 requests/s, 26930.65 total tokens/s, 85.05 output tokens/s
+Total num prompt tokens:  1262580
+Total num output tokens:  4000
+```
+
+```bash
+验证是否打满：
+n = 40，文本块=4000(100prompt, 53s):
+Throughput: 1.78 requests/s, 20903.28 total tokens/s, 71.27 output tokens/s
+Total num prompt tokens:  1169180
+Total num output tokens:  4000
+
+n = 40，文本块=40000(1000prompt, 9m12s):
+Throughput: 1.74 requests/s, 20570.07 total tokens/s, 69.73 output tokens/s
+Total num prompt tokens:  11760476
+Total num output tokens:  40000
+```
+
+#### 2.1.6
+
+// profiling
+// sparse attention model
+
 ### 2.2 在线吞吐量测试
 
 n = 400
