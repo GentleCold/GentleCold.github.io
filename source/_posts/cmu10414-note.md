@@ -279,3 +279,54 @@ cpu side
 - matrix multiplication
 
 ## training large models
+
+- reduce memory
+
+<p align="center">
+    <img src="/imgs/image-20250703144809.png"/>
+</p>
+
+- all reduce
+- parallel training(data parallel / model parallel)
+
+## generative adversarial networks
+
+- 生成对抗网络：
+
+<p align="center">
+    <img src="/imgs/image-20250703152238.png"/>
+</p>
+
+- convolutional GAN
+- cycle GAN
+
+## sequence modeling and recurrent networks
+
+- recurrent neural networks
+
+<p align="center">
+    <img src="/imgs/image-20250709180648.png"/>
+</p>
+
+- stacking rnns
+- lstm 解决梯度消失/爆炸问题
+
+<p align="center">
+    <img src="/imgs/image-20250709183853.png"/>
+</p>
+
+- seq2seq model / bidirectional rnns
+- block training lstm
+
+## transformer
+
+- attention
+
+<p align="center">
+    <img src="/imgs/image-20250710201414.png"/>
+</p>
+
+## model deployment
+
+- onnx
+- machine learning complication
