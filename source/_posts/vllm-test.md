@@ -183,10 +183,152 @@ Total num prompt tokens:  11760476
 Total num output tokens:  40000
 ```
 
-#### 2.1.6
+#### 2.1.6 profiling
 
 // profiling
+
+- GPU KV cache size: 416304 tokens
+- max_num_batched_tokens=16384
+- $( xL1 + L2 )^2 \cdot n / x$
+
+// 显存占用
+
+- 显存占用监控只能在vllm内部实现，v1还没有实现log部分，v0已实现
+- 显存占用不是瓶颈，计算是瓶颈：
+
+以v0引擎为例：
+
+修改max-num-batched-tokens参数来提高Batch数量
+
+```
+max_num_batched_tokens = 10000
+n = 4，文本块=4000(1000prompt):
+INFO 07-14 14:38:01 [llm_engine.py:437] init engine (profile, create kv cache, warmup model) took 18.80 seconds
+INFO 07-14 14:38:07 [metrics.py:486] Avg prompt throughput: 15135.6 tokens/s, Avg generation throughput: 40.4 tokens/s, Running: 33 req
+s, Swapped: 0 reqs, Pending: 925 reqs, GPU KV cache usage: 9.2%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:12 [metrics.py:486] Avg prompt throughput: 25464.4 tokens/s, Avg generation throughput: 81.2 tokens/s, Running: 33 req
+s, Swapped: 0 reqs, Pending: 823 reqs, GPU KV cache usage: 9.4%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:17 [metrics.py:486] Avg prompt throughput: 25478.4 tokens/s, Avg generation throughput: 89.9 tokens/s, Running: 39 req
+s, Swapped: 0 reqs, Pending: 704 reqs, GPU KV cache usage: 9.7%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:22 [metrics.py:486] Avg prompt throughput: 25387.7 tokens/s, Avg generation throughput: 90.7 tokens/s, Running: 31 req
+s, Swapped: 0 reqs, Pending: 593 reqs, GPU KV cache usage: 9.6%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:27 [metrics.py:486] Avg prompt throughput: 25379.3 tokens/s, Avg generation throughput: 85.2 tokens/s, Running: 33 req
+s, Swapped: 0 reqs, Pending: 484 reqs, GPU KV cache usage: 9.5%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:32 [metrics.py:486] Avg prompt throughput: 25350.5 tokens/s, Avg generation throughput: 84.5 tokens/s, Running: 32 req
+s, Swapped: 0 reqs, Pending: 376 reqs, GPU KV cache usage: 9.2%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:37 [metrics.py:486] Avg prompt throughput: 25307.8 tokens/s, Avg generation throughput: 82.0 tokens/s, Running: 31 req
+s, Swapped: 0 reqs, Pending: 272 reqs, GPU KV cache usage: 9.4%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:42 [metrics.py:486] Avg prompt throughput: 25275.8 tokens/s, Avg generation throughput: 81.5 tokens/s, Running: 35 req
+s, Swapped: 0 reqs, Pending: 165 reqs, GPU KV cache usage: 9.4%, CPU KV cache usage: 0.0%.
+INFO 07-14 14:38:48 [metrics.py:486] Avg prompt throughput: 25202.6 tokens/s, Avg generation throughput: 85.2 tokens/s, Running: 34 req
+s, Swapped: 0 reqs, Pending: 56 reqs, GPU KV cache usage: 9.3%, CPU KV cache usage: 0.0%.
+Throughput: 20.32 requests/s, 24316.25 total tokens/s, 81.29 output tokens/s
+Total num prompt tokens:  1192580
+Total num output tokens:  4000
+
+max_num_batched_tokens = 80000
+n = 4，文本块=4000(1000prompt):
+INFO 07-14 15:08:55 [metrics.py:486] Avg prompt throughput: 15254.3 tokens/s, Avg generation throughput: 12.6 tokens/s, Running: 129 re
+qs, Swapped: 0 reqs, Pending: 871 reqs, GPU KV cache usage: 41.1%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:01 [metrics.py:486] Avg prompt throughput: 26310.4 tokens/s, Avg generation throughput: 53.3 tokens/s, Running: 267 re
+qs, Swapped: 0 reqs, Pending: 733 reqs, GPU KV cache usage: 82.3%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:07 [metrics.py:486] Avg prompt throughput: 26104.8 tokens/s, Avg generation throughput: 95.6 tokens/s, Running: 267 re
+qs, Swapped: 0 reqs, Pending: 605 reqs, GPU KV cache usage: 78.6%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:13 [metrics.py:486] Avg prompt throughput: 25025.7 tokens/s, Avg generation throughput: 84.4 tokens/s, Running: 263 re
+qs, Swapped: 0 reqs, Pending: 471 reqs, GPU KV cache usage: 78.1%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:19 [metrics.py:486] Avg prompt throughput: 25783.0 tokens/s, Avg generation throughput: 85.4 tokens/s, Running: 255 re
+qs, Swapped: 0 reqs, Pending: 350 reqs, GPU KV cache usage: 78.5%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:25 [metrics.py:486] Avg prompt throughput: 25851.4 tokens/s, Avg generation throughput: 89.0 tokens/s, Running: 246 re
+qs, Swapped: 0 reqs, Pending: 226 reqs, GPU KV cache usage: 78.4%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:31 [metrics.py:486] Avg prompt throughput: 25812.8 tokens/s, Avg generation throughput: 80.7 tokens/s, Running: 260 re
+qs, Swapped: 0 reqs, Pending: 90 reqs, GPU KV cache usage: 81.4%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:09:37 [metrics.py:486] Avg prompt throughput: 25849.6 tokens/s, Avg generation throughput: 89.8 tokens/s, Running: 226 re
+qs, Swapped: 0 reqs, Pending: 0 reqs, GPU KV cache usage: 68.3%, CPU KV cache usage: 0.0%.
+Throughput: 20.64 requests/s, 24698.61 total tokens/s, 82.56 output tokens/s
+Total num prompt tokens:  1192580
+Total num output tokens:  4000
+
+max_num_batched_tokens = 160000
+n = 4，文本块=4000(1000prompt):
+INFO 07-14 15:15:48 [metrics.py:486] Avg prompt throughput: 18817.5 tokens/s, Avg generation throughput: 15.1 tokens/s, Running: 266 re
+qs, Swapped: 0 reqs, Pending: 734 reqs, GPU KV cache usage: 98.9%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:15:54 [metrics.py:486] Avg prompt throughput: 25767.2 tokens/s, Avg generation throughput: 43.1 tokens/s, Running: 266 re
+qs, Swapped: 0 reqs, Pending: 734 reqs, GPU KV cache usage: 99.0%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:16:00 [metrics.py:486] Avg prompt throughput: 24324.2 tokens/s, Avg generation throughput: 124.5 tokens/s, Running: 276 r
+eqs, Swapped: 0 reqs, Pending: 458 reqs, GPU KV cache usage: 98.9%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:16:07 [metrics.py:486] Avg prompt throughput: 25612.9 tokens/s, Avg generation throughput: 44.1 tokens/s, Running: 276 re
+qs, Swapped: 0 reqs, Pending: 458 reqs, GPU KV cache usage: 99.0%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:16:13 [metrics.py:486] Avg prompt throughput: 23555.6 tokens/s, Avg generation throughput: 121.8 tokens/s, Running: 257 r
+eqs, Swapped: 0 reqs, Pending: 201 reqs, GPU KV cache usage: 98.0%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:16:20 [metrics.py:486] Avg prompt throughput: 25548.9 tokens/s, Avg generation throughput: 41.5 tokens/s, Running: 258 re
+qs, Swapped: 0 reqs, Pending: 200 reqs, GPU KV cache usage: 98.9%, CPU KV cache usage: 0.0%.
+INFO 07-14 15:16:26 [metrics.py:486] Avg prompt throughput: 24392.9 tokens/s, Avg generation throughput: 118.3 tokens/s, Running: 200 r
+eqs, Swapped: 0 reqs, Pending: 0 reqs, GPU KV cache usage: 73.3%, CPU KV cache usage: 0.0%.
+Throughput: 19.98 requests/s, 23911.86 total tokens/s, 79.93 output tokens/s
+Total num prompt tokens:  1192580
+Total num output tokens:  4000
+```
+
+可见尽管提高batchsize和kvcache的显存占用，吞吐量也没有较大变化，说明计算已达瓶颈
+
+- 显存占用可视化：
+
+https://huggingface.co/blog/train_memory
+
+<p align="center">
+    <img src="/imgs/image-20250716171216.png"/>
+</p>
+
+- 其他profiling（函数级别的profiling）：
+
+pytorch profile、nvidia nsight system
+
+<!-- // 关于内存传输瓶颈： -->
+<!-- prompt的tokenize过程在cpu端进行，产生的结果其实并不大，所以不会有太明显的内存传输瓶颈，所谓的GPU空泡其实是因为在等待tokenizer -->
+
+- 关于计算复杂度：
+
+没有考虑隐藏层维度d和线性层变换复杂度
+
+(llama3.1参数计算分析：https://zhuanlan.zhihu.com/p/25434610561)：
+
+$O(N)=dN^2 + d^2N$
+
+$d=4096$
+
+$d(L1+L2)^2*4 + d^2(L1+L2)*4=409600d+1280d^2=1677721600+21474836480=23152558080$
+
+$d(4*L1+L2)^2 + d^2(4*L1+L2)=1488400d+1220d^2=6096486400+20468203520=26564689920$
+
+当N较小时，计算复杂度以线性层变换为主导，所以差距不大
+
+---
+
 // sparse attention model
+
+使用模型：neuralmagic/Sparse-Llama-3.1-8B-2of4
+
+```bash
+n = 400，文本块=4000(10prompt, 3m18s):
+Throughput: 0.05 requests/s, 5841.18 total tokens/s, 19.96 output tokens/s
+Total num prompt tokens:  1166840
+Total num output tokens:  4000
+
+n = 20，文本块=4000(200prompt, 46s)
+Throughput: 4.13 requests/s, 24274.25 total tokens/s, 82.58 output tokens/s
+Total num prompt tokens:  1171780
+Total num output tokens:  4000
+
+n = 4，文本块=4000(1000prompt, 41s):
+Throughput: 22.74 requests/s, 27214.20 total tokens/s, 90.97 output tokens/s
+Total num prompt tokens:  1192580
+Total num output tokens:  4000
+
+n = 1, 文本块=4000(4000prompt, 42s):
+Throughput: 87.79 requests/s, 27973.23 total tokens/s, 87.79 output tokens/s
+Total num prompt tokens:  1270580
+Total num output tokens:  4000
+```
 
 ### 2.2 在线吞吐量测试
 
