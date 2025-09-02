@@ -156,3 +156,7 @@ kv缓存合并：
 - 前缀感知调度
 - 抢占式和公平导向的调度
 - 特定层和分层调度
+
+## nano vllm
+
+generate -> step -> schedule -> allocate (根据block进行hash，判断prefix cache) -> model runner (init: load model -> warm up model -> allocate kv cache(算出能分配的kv cache blocks数量然后分配给模型每一层)) -> run model (prepare prefill / decode)

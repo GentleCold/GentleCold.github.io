@@ -53,9 +53,27 @@ tags: [笔记, LLM]
 
 ## kernels / tritons
 
+- benchmark: warmup
+- triton / torch compile
+
+## parallel
+
+- all reduce/reduce/broadcast/all gather/reduce scatter
+- data parallelism (memory problem, ZeRO 1/2/3)
+- model parallelism: pipeline(zero bubble pipelining) / tensor
+- activation parallelism: sequence
+- context parallel / ring attention
+- expert parallel
+- 3d/4d parallel
+
+## inference
+
+- memory-bound / compute-bound
+
 # 作业
 
 ## 作业一
 
 - 通过utf-8编码将词汇表的0-154997的数值范围转换到0-255，但是会增大序列长度；
 - 词级分词器（word-level tokenizers）面临词汇表外（out-of-vocabulary）问题，字节级分词器需要更长的长度，所以使用Subword tokenization（BPE）
+- ROPE: https://zhuanlan.zhihu.com/p/662790439
