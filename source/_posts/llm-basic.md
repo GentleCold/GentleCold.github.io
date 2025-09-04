@@ -348,7 +348,9 @@ https://github.com/keli-wen/AGI-Study/tree/master/inference/Intro-Basic-LLM-Infe
 
 ### 2.7 Chunked Prefill
 
-当上下文长度过大时，如果不对prefill进行拆分，长seq仍然会影响到短seq，造成巨大的延时，所以对prefill阶段进行拆分，通过修改attention mask就可以等价实现
+当上下文长度过大时，如果不对prefill进行拆分，长seq仍然会影响到短seq，所以对prefill阶段进行拆分，可以改善时延，同时也能减少pp并行的GPU气泡，但是会折损prefill的性能
+
+通过修改attention mask就可以等价实现
 
 <p align="center">
     <img src="/imgs/image-20250903155928.png"/>

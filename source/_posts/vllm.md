@@ -160,3 +160,7 @@ kv缓存合并：
 ## nano vllm
 
 generate -> step -> schedule -> allocate (根据block进行hash，判断prefix cache) -> model runner (init: load model -> warm up model -> allocate kv cache(算出能分配的kv cache blocks数量然后分配给模型每一层)) -> run model (prepare prefill / decode)
+
+## prefill only
+
+hybrid prefill，线性层做chunk-by-chunk计算，attention计算不变
