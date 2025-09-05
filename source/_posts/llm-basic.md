@@ -338,7 +338,9 @@ https://github.com/keli-wen/AGI-Study/tree/master/inference/Intro-Basic-LLM-Infe
 
 但是这样就会多出padding部分的不必要的计算量
 
-也可以使用packing的方式，直接变成一个维度`Tensor[batch_size * seq_len, hidden_dim]`，flash attention的官方实现中提供了varlen接口，提供cu_seqlen_q，直接在kernel层面避免不必要的计算：
+也可以使用packing的方式，直接变成一个维度`Tensor[batch_size * seq_len, hidden_dim]`，除了attention计算以外的模块都可以这样做，而且方便将prefill和decode放在一起去batch处理
+
+而对于attention的计算，flash attention官方实现中提供了varlen接口，提供cu_seqlen_q，直接在kernel层面避免不必要的计算：
 
 <p align="center">
     <img src="/imgs/image-20250903154317.png"/>
@@ -348,7 +350,9 @@ https://github.com/keli-wen/AGI-Study/tree/master/inference/Intro-Basic-LLM-Infe
 
 ### 2.7 Chunked Prefill
 
-当上下文长度过大时，如果不对prefill进行拆分，长seq仍然会影响到短seq，所以对prefill阶段进行拆分，可以改善时延，同时也能减少pp并行的GPU气泡，但是会折损prefill的性能
+当上下文长度过大时，如果不对prefill进行拆分，长seq仍然会影响到短seq，所以对prefill阶段进行拆分，可以改善时延，同时也能减少pp并行的GPU气泡，但是会折损prefill的性能，因为要读前一个chunk的kv cache
+
+chunk prefill主要一个是帮助decode，一个是减少pp并行的气泡
 
 通过修改attention mask就可以等价实现
 

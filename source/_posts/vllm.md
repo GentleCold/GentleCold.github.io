@@ -163,4 +163,10 @@ generate -> step -> schedule -> allocate (根据block进行hash，判断prefix c
 
 ## prefill only
 
-hybrid prefill，线性层做chunk-by-chunk计算，attention计算不变
+hybrid prefill，线性层做chunk-by-chunk计算，减少显存占用
+
+attention计算正常进行
+
+使用最短作业优先策略
+
+requst一个一个处理，因为长文本已经是compute-bound了没必要加大batch
