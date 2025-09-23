@@ -9,6 +9,10 @@ tags: [LLM]
 
 https://github.com/GeeeekExplorer/nano-vllm
 
+另外关于vllm的逻辑：
+
+https://www.aleksagordic.com/blog/vllm
+
 ## 1. qwen3模型结构和推理过程(prefill)
 
 ### 1.1 分词器
@@ -387,3 +391,147 @@ https://zhuanlan.zhihu.com/p/1908153627639551302
 - context parallel / ring attention
 - expert parallel
 - 3d/4d parallel
+
+## Appendix：Pytorch Profiler
+
+pytorch profiler 一般针对的是 model forward 过程中的 profiling
+
+```python
+from torch.profiler import profile, ProfilerActivity, record_function
+
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+             record_shapes=True,
+             profile_memory=True,
+             with_stack=True) as prof:
+    with record_function("model_inference"):
+        model(inputs)
+```
+
+其中activities里面可以添加想捕获的profile类型（ProfilerActivity.CPU / ProfilerActivity.CUDA）
+
+其他参数：
+
+- record_shapes 是否捕获调用函数时输入的tensor张量
+- profile_memory 是否捕获内存占用信息
+- with_stack 查看调用堆栈
+- record_function 里面传入的字符串可以是任意的，可以使用多个record_function用来监控不同的部分
+
+结果打印：
+
+```python
+
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+prof.export_chrome_trace("trace.json")
+```
+
+json文件可以用于chrome://tracing可视化
+
+---
+
+为避免profiling过程开销太大或者生成的profiling文件太大，可以用schedule来限制：
+
+```python
+from torch.profiler import schedule
+
+sort_by_keyword = "self_" + device + "\_time_total"
+
+def trace_handler(p):
+    output = p.key_averages().table(sort_by=sort_by_keyword, row_limit=10)
+    print(output)
+    p.export_chrome_trace("/tmp/trace*" + str(p.step_num) + ".json")
+
+with profile(
+    activities=activities,
+    schedule=torch.profiler.schedule(wait=1, warmup=1, active=2, repeat=2),
+    on_trace_ready=trace_handler,
+) as p:
+    for idx in range(8):
+        model(inputs)
+    p.step()
+```
+
+这个例子中表示，刚开始是wait阶段，调用一遍step()后进入warmup阶段，再调用两遍step()做profiling记录，再调用一遍step()进入下一个循环（重新从wait开始），并且触发trace_handler函数，可以做一些自定义的信息输出。repeat=2表示限制整个循环最多只能进行两轮
+
+---
+
+应用：
+
+例如如果只想关注注意力计算中的qkv线性变换和算attention的部分，先用record_function做个标注：
+
+```python
+def forward(
+    self,
+    positions: torch.Tensor,
+    hidden_states: torch.Tensor,
+) -> torch.Tensor:
+    with record_function("qkv proj"):
+        qkv = self.qkv_proj(hidden_states)
+
+    q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+    q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
+    k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim))
+    v = v.view(-1, self.num_kv_heads, self.head_dim)
+    q, k = self.rotary_emb(positions, q, k)
+
+    with record_function("attn"):
+        o = self.attn(q, k, v)
+
+    output = self.o_proj(o.flatten(1, -1))
+    return output
+
+```
+
+直接在generate函数处创建prof：
+
+```python
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="cuda_time_total", row_limit=10)
+    print(output)
+    p.export_chrome_trace("trace.json")
+
+with profile(
+    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    record_shapes=True,
+    profile_memory=True,
+    schedule=torch.profiler.schedule(wait=0, warmup=0, active=5, repeat=1),
+    on_trace_ready=trace_handler,
+) as p:
+    outputs = llm.generate(prompts, sampling_params, p)
+```
+
+然后在llm_engine里面的step后面调用一次step：
+
+```python
+while not self.is_finished():
+    t = perf_counter()
+    output, num_tokens = self.step()
+    p.step()
+```
+
+这样相当于跟着nano-vllm的调度器做prof了，记录5次的话相当于一次prefill和四次decode：
+
+<p align="center">
+    <img src="/imgs/image-20250923225450.png"/>
+</p>
+
+右上角可以搜索自己标注的函数
+
+---
+
+cuda memory可视化：
+
+```python
+torch.cuda.memory._record_memory_history(max_entries=100000)
+
+model(inputs)
+
+# Dump memory snapshot history to a file and stop recording
+torch.cuda.memory._dump_snapshot("profile.pkl")
+torch.cuda.memory._record_memory_history(enabled=None)
+```
+
+导出的文件导入到
+
+https://pytorch.org/memory_viz
+
+这个主要用来观察推理过程中激活值对显存的占据变化，可能需要把kv cache开小一点

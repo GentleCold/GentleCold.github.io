@@ -170,3 +170,7 @@ attention计算正常进行
 使用最短作业优先策略
 
 requst一个一个处理，因为长文本已经是compute-bound了没必要加大batch
+
+## other
+
+~~多个块拼一起处理还是有优势的~~
