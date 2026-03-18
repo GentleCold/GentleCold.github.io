@@ -47,3 +47,13 @@ hidden_size维度的稀疏，用mask
 - llm queries的应用和重排优化
 
 - todo: flash llm / cpu offloading / cross layer / optimize llm query
+
+# KVZIP
+
+context kv cache + \[repeat prompt + context\]
+
+根据prompt + context找到之前的注意力分数，后面的context相当于一种teacher force
+
+# KeyDiff
+
+剪枝与平均K的余弦相似度大的（越接近的）
