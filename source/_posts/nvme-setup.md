@@ -13,7 +13,7 @@ tags: [Linux, nvme]
 
 大概确定好要插的位置
 
-服务器关机、断电、将NVMe插入PCIe插槽
+服务器关机、断电、拆机，将NVMe插入PCIe插槽
 
 ### 2. 磁盘初始化
 
@@ -26,6 +26,14 @@ lspci检查安装是否被识别：
 可见其型号为：Intel Corporation NVMe Datacenter SSD [Optane]，与GPU0最接近
 
 安装对应工具Intel mas工具初始化：https://www.intel.cn/content/www/cn/zh/download/19520/intel-memory-and-storage-tool-cli-command-line-interface.html
+
+> show -intelssd 0 显示磁盘不可用，存在内部断言，需要查询PSID码强制恢复
+
+Optinal:
+
+PCIe3 x4的传输速度可能无法展现GDS的性能优势
+
+目前的nvme是四块盘，共同由btrfs文件系统组织（UUID相同），组成类似于raid0的single模式，查阅以后可能可以用btrfs remove分一块盘出来
 
 ### 3. GDS驱动安装
 
@@ -48,22 +56,28 @@ sudo apt install doca-ofed mlnx-fw-updater mlnx-nvme-dkms
 之后尝试通过cuda toolkit安装：https://developer.nvidia.com/cuda-toolkit-archive
 取消勾选驱动安装（已经安装过了），勾选nvidia-fs
 
+如果运行失败，可以自己编译不同版本：https://github.com/NVIDIA/gds-nvidia-fs
+
 检查：
 
 ```bash
 modprobe nvidia-fs
 modinfo nvidia_fs | grep version
+
 /usr/local/cuda/gds/tools/gdscheck -p
 /usr/local/cuda/gds/tools/gdsio -f /data/gds/test -d 4 -w 1 -s 4G -i 1M -x 0 -I 0
 /usr/local/cuda/gds/tools/gdsio -f /data/gds/test -d 0 -w 1 -s 4G -i 1M -x 0 -I 1
 cat cufile.log
+
+cat /proc/driver/nvidia-fs/peer_distance
+cat /proc/driver/nvidia-fs/stats
 ```
 
 其他注意事项：
 
 - 禁用iommu：intel_iommu=off
 - 禁用ACS
-- hostnamectl检查是金属机还是云主机
+- ~~hostnamectl检查是金属机还是云主机~~
 
 拓扑检查：
 
@@ -72,14 +86,7 @@ Nvidia-smi topo
 lspci -tv | egrep -i "nvidia | nvme"
 ```
 
-状态检查：
-
-```bash
-cat /proc/driver/nvidia-fs/peer_distance
-cat /proc/driver/nvidia-fs/stats
-```
-
-#### 4. 性能测试
+### 4. 性能测试
 
 普通NVMe测试（注意ioengine选择libaio或者io_uring来异步打满nvme带宽）：
 
@@ -92,7 +99,7 @@ fio --filename=/data/fio_test --direct=1 --rw=read \
 
 结果：
 
-```bashk
+```bash
 btrfs_read_real: (g=0): rw=read, bs=(R) 1024KiB-1024KiB, (W) 1024KiB-1024KiB, (T) 1024KiB-1024KiB, ioengine=libaio, iodepth=32
 ...
 fio-3.28
