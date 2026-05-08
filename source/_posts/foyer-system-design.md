@@ -1,5 +1,5 @@
 ---
-title: Foyer论文调研
+title: Foyer系统设计分析
 category: [笔记]
 date: 2026-05-08 12:04
 tags: [Cache, Rust, Storage]
@@ -11,7 +11,7 @@ tags: [Cache, Rust, Storage]
 
 代码：https://github.com/foyer-rs/foyer
 
-说明：Foyer本身更像是一篇系统设计文章和开源项目，而不是传统会议论文。这里按论文调研方式分析它的设计动机、核心机制和对缓存系统的启发。
+说明：Foyer不是传统会议论文，而是一篇系统设计文章和开源项目。这里按系统设计分析的方式梳理它的设计动机、核心机制和对缓存系统的启发。
 
 ## 1. 背景
 
