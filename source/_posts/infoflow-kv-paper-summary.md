@@ -59,9 +59,9 @@ InfoFlow KV的token选择指标是prompt-conditioned attention norm。
 
 对每个context token `j`，统计prompt token对它的attention：
 
-```text
-s_j = sum_i A_ij
-```
+$$
+s_j = \sum_i A_{ij}
+$$
 
 其中`A`是prompt-to-context attention矩阵。分数越高，说明生成相关prompt位置越可能从这个context token读取信息，因此它更值得被重计算。
 
