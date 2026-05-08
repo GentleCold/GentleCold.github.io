@@ -58,6 +58,15 @@ sudo apt install doca-ofed mlnx-fw-updater mlnx-nvme-dkms
 
 如果运行失败，可以自己编译不同版本：https://github.com/NVIDIA/gds-nvidia-fs
 
+然后：
+
+```
+mkdir -p /lib/modules/$(uname -r)/extra
+cp nvidia-fs.ko /lib/modules/$(uname -r)/extra/
+depmod -a
+modprobe nvidia_fs
+```
+
 检查：
 
 ```bash
