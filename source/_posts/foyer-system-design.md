@@ -1,208 +1,365 @@
 ---
-title: Foyer系统设计分析
+title: Foyer技术要点分析
 category: [笔记]
 date: 2026-05-08 12:04
 tags: [Cache, Rust, Storage]
 ---
 
-资料：Foyer: A Hybrid Cache in Rust - Past, Present and Future
+资料：
 
-链接：https://blog.mrcroxx.com/posts/foyer-a-hybrid-cache-in-rust-past-present-and-future/
+- Foyer: A Hybrid Cache in Rust - Past, Present and Future
+- Foyer docs.rs API
+- Foyer GitHub README
 
-代码：https://github.com/foyer-rs/foyer
+链接：
 
-说明：Foyer不是传统会议论文，而是一篇系统设计文章和开源项目。这里按系统设计分析的方式梳理它的设计动机、核心机制和对缓存系统的启发。
+- https://blog.mrcroxx.com/posts/foyer-a-hybrid-cache-in-rust-past-present-and-future/
+- https://docs.rs/foyer/latest/foyer/
+- https://github.com/foyer-rs/foyer
 
-## 1. 背景
+Foyer不是论文，而是一个Rust hybrid cache项目。这里不按“论文调研”写，而是拆它用了哪些技术点、每个点解决什么问题、工程上为什么要这么设计。
 
-Foyer讨论的是通用系统里的hybrid cache，也就是把内存缓存和磁盘缓存组合成一个统一缓存层。
+## 1. Hybrid Cache抽象
 
-传统缓存常见有两类：
+Foyer的核心抽象是`HybridCache`：对外表现得像一个普通cache，对内同时管理内存层和磁盘层。
 
-1. 纯内存缓存：延迟低、实现简单，但容量受DRAM限制，成本高。
-2. 纯磁盘缓存：容量大、成本低，但访问延迟和I/O调度复杂度明显更高。
+普通内存cache的路径通常是：
 
-实际系统往往需要二者结合。例如数据库、对象存储、RAG文档缓存、LLM KV cache offload系统里，热点数据应该留在内存，温数据可以落到SSD，冷数据最终回源或重算。
+```text
+get(key) -> memory hit/miss
+```
 
-Foyer的目标不是做某个业务系统的专用缓存，而是提供一个Rust里的通用hybrid cache框架：上层使用一个cache API，下层同时管理memory tier和disk tier。
-
-一句话概括：**Foyer试图把“内存快、磁盘大”的两级缓存做成可复用的Rust系统组件。**
-
-## 2. 问题
-
-Hybrid cache看起来只是多加一层SSD，但实际工程问题比单层LRU复杂很多。
-
-### 2.1 数据应该进哪一层
-
-如果所有新对象都先进入内存，很容易发生cache pollution：一次性扫描、低复用大对象会挤掉真正的热点。
-
-如果所有对象都写入磁盘，又会放大写入量，让SSD带宽和寿命成为瓶颈。
-
-因此缓存系统需要回答两个问题：
-
-1. admission：一个对象值不值得进入缓存。
-2. promotion：从磁盘读到的对象是否应该提升到内存。
-
-这和简单LRU不同。LRU只问“谁最久没用”，hybrid cache还要问“这个对象值得占用哪一级介质”。
-
-### 2.2 并发miss会造成放大
-
-在高并发服务里，多个请求可能同时访问同一个不存在的key。如果每个请求都独立回源，就会出现cache stampede。
-
-更合理的行为是：第一个请求负责fetch，后续同key请求等待它的结果。这样可以把N次回源压成一次。
-
-### 2.3 磁盘层不是HashMap
-
-内存层可以简单地维护hash table加LRU链表，但磁盘层需要处理：
-
-1. 文件布局和空间回收。
-2. 异步I/O。
-3. 写入合并和读放大。
-4. 崩溃恢复或元数据一致性。
-5. 大小不等value导致的碎片。
-
-因此hybrid cache不是给内存LRU加一个`std::fs::write`就够了，它需要单独设计磁盘对象布局和I/O管线。
-
-## 3. 核心设计
-
-Foyer把缓存分成两个主要层次：
-
-1. memory cache：低延迟、保存最热对象。
-2. storage cache：基于磁盘或SSD，保存更大容量的温对象。
-
-对上层来说，Foyer提供类似普通cache的接口；对内部来说，它要在两层之间做准入、驱逐、提升和后台I/O。
-
-### 3.1 HybridCache抽象
-
-Hybrid cache的关键抽象是让调用者不直接关心对象现在在哪一层。
-
-访问流程可以理解为：
+Foyer的路径更接近：
 
 ```text
 get(key)
--> 查memory cache
--> miss则查storage cache
--> storage hit则读取并可能promote到memory
--> storage miss则回源fetch
--> fetch结果按策略写入缓存
+-> 查内存cache
+-> 内存miss后查磁盘cache
+-> 磁盘hit则异步读取value，并可能插回内存
+-> 磁盘miss则返回miss，或者走fetch闭包
 ```
 
-这样上层业务只看到一次`get`，而不是手动写“先查内存、再查磁盘、再回源”的重复逻辑。
+这个抽象的关键不是“多查一次磁盘”，而是把层级关系隐藏起来。调用者不需要手写两套cache、不需要自己处理磁盘I/O、不需要自己判断什么时候promote，也不需要在每个业务点重复处理并发miss。
 
-这类抽象的价值在于，它把缓存一致性、并发miss合并、I/O调度和层间迁移集中到框架内部。
+这类设计适合value比较大、复用概率存在但DRAM放不下全部数据的系统。例如RisingWave这类状态存储系统、对象缓存、Embedding/RAG缓存、LLM KV block缓存。
 
-### 3.2 Fetch去重
+## 2. 内存层：fast path和策略插件
 
-Foyer的一个重要能力是把cache miss和fetch函数绑定起来。
+Foyer的内存层负责最低延迟的fast path。它不能太复杂，否则所有请求都会被元数据开销拖慢。
 
-当多个任务同时请求同一个key时，系统可以让它们共享同一个in-flight fetch。第一个请求触发真实加载，后续请求等待同一个结果。
+### 2.1 Sharding
 
-这个设计解决的是缓存系统里很常见的thundering herd问题。它对后端数据库、对象存储、远端KV服务、LLM KV block重算都很重要：miss本身不可怕，怕的是同一个miss被并发放大。
+高并发cache如果只有一个全局锁，热点不是数据本身，而是元数据锁。Foyer这类系统通常会把key空间切成多个shard，每个shard维护自己的索引和策略状态。
 
-### 3.3 Admission和Eviction
+sharding的好处是：
 
-Foyer支持不同的缓存策略。核心思想是把“是否接纳”和“驱逐谁”从固定LRU里抽象出来。
+1. 降低锁竞争。
+2. 让访问、插入、驱逐尽量局部化。
+3. 方便并行执行策略维护。
 
-常见策略包括：
+代价是全局最优驱逐会变难。一个shard满了，不代表整个cache都满；某个shard的victim也不一定是全局最冷对象。所以sharded cache常见取舍是牺牲一点全局最优，换并发吞吐。
 
-1. LRU：实现简单，适合时间局部性明显的负载。
-2. LFU或TinyLFU类准入：利用访问频率估计，避免一次性数据污染缓存。
-3. S3-FIFO一类FIFO-family策略：用更低元数据成本接近较好的命中率。
+### 2.2 Eviction不是固定LRU
 
-对hybrid cache来说，admission比单层缓存更重要。因为每次错误接纳不仅浪费内存，也可能造成SSD写入放大。
+Foyer把eviction策略做成可替换组件，而不是写死LRU。原因是LRU在很多真实负载下并不好：
 
-### 3.4 磁盘层I/O
+1. 顺序扫描会污染cache。
+2. 一次性大批量访问会把热点挤出去。
+3. LRU只看recency，不看frequency。
 
-Foyer的storage cache需要把对象序列化到磁盘，并维护key到磁盘位置的索引。
+Foyer关注的策略包括FIFO-family、S3-FIFO、LRU、LFU/TinyLFU一类思路。
 
-这里有几个典型取舍：
+S3-FIFO这类策略的核心优势是元数据更轻。它不需要每次hit都把节点移动到链表头，减少了高并发下的写元数据压力。对于cache系统，这一点很重要：命中路径如果还要频繁修改共享结构，hit也会变贵。
 
-1. 写路径要尽量批量化，避免小对象随机写拖垮SSD。
-2. 读路径要支持异步I/O，不能让业务线程长时间阻塞。
-3. 空间回收要和驱逐策略配合，防止磁盘文件无限膨胀。
-4. 元数据需要足够轻量，否则索引本身会成为内存瓶颈。
+### 2.3 Admission和Eviction分离
 
-这也是Foyer和普通内存cache crate最大的差异：它不只是一个替换策略库，而是一个完整的缓存存储系统。
+很多人理解cache时只关注“满了驱逐谁”。Foyer更重要的点是把admission也放进设计里。
 
-## 4. 和CacheLib的关系
+Eviction回答：
 
-Foyer文章明确提到，业界已有Facebook/Meta的CacheLib这类成熟hybrid cache系统。
+```text
+cache满了，谁应该被踢出去？
+```
 
-CacheLib的价值在于证明了通用缓存库可以服务多种大规模在线系统：同一套缓存内核可以被数据库、图存储、对象服务等复用。
+Admission回答：
 
-Foyer的不同点在于它选择Rust生态：
+```text
+这个新对象值不值得进cache？
+```
 
-1. 用Rust所有权和类型系统约束内存安全。
-2. 和Tokio、async ecosystem结合。
-3. 给Rust服务提供一个不用绑定C++库的hybrid cache选择。
+在hybrid cache里，admission尤其关键。因为错误接纳不只会污染DRAM，还可能造成SSD写放大。一个只访问一次的大value，如果被写入磁盘层，后续没有命中，那这次写就是纯损耗。
 
-所以Foyer不是在理论上发明hybrid cache，而是在Rust系统生态里重建这类能力。
+TinyLFU类准入策略的典型做法是用近似频率结构估计key热度，只有候选对象比潜在victim更值得缓存时才接纳。这里常见数据结构是Count-Min Sketch，优点是内存开销可控，缺点是只能近似计数，需要周期性aging避免历史热点永久占优。
 
-## 5. 对KV Cache系统的启发
+## 3. 磁盘层：不是把HashMap落盘
 
-Foyer的设计对LLM KV cache offload也有直接启发。
+Foyer最有价值的部分在磁盘层。磁盘cache和内存cache的差异非常大，不能简单把value序列化后写文件。
 
-KV cache系统通常也有多级存储：
+磁盘层至少要解决：
 
-1. GPU HBM：最快，但容量最贵。
-2. CPU pinned memory：容量更大，适合跨请求复用和RDMA传输。
-3. SSD：更便宜，适合保存温KV block。
-4. 远端节点内存：在分布式场景里可以作为另一级共享缓存。
+1. 文件空间怎么分配。
+2. 对象大小不等怎么处理。
+3. 写入如何批量化。
+4. 读取如何异步化。
+5. 元数据索引怎么维护。
+6. 崩溃后如何恢复。
+7. 如何减少文件系统和页缓存干扰。
 
-这和Foyer的hybrid cache模型非常接近，只是KV cache的value更大、更结构化，并且读写路径受GPU DMA、RDMA和attention调度约束。
+Foyer把磁盘层称为storage engine，并提供多种engine配置。这一点类似数据库：同一个cache API下面，底层存储引擎可以针对value大小和I/O模式做不同实现。
 
-### 5.1 准入比驱逐更关键
+## 4. Small / Large / Mixed引擎
 
-在KV cache复用场景里，错误写入代价很高。一个长prompt可能产生大量KV block，如果它未来不会复用，把它写进CPU或SSD缓存就是纯开销。
+Foyer文档里可以看到不同磁盘引擎思路，例如Small、Large、Mixed以及BlockEngine相关配置。
 
-因此系统不能只在满了之后驱逐，还应该在写入前做admission判断。例如：
+它们背后的问题是：小对象和大对象不能用同一种布局高效处理。
 
-1. 短prompt或低复用概率请求直接bypass。
-2. 对重复前缀、高频系统prompt、RAG模板保守接纳。
-3. 用TinyLFU或滑动窗口频率估计过滤一次性block。
+### 4.1 Small对象
 
-这和Foyer强调的admission思路一致。
+小对象的问题是元数据和I/O放大。
 
-### 5.2 Fetch去重对应KV重算去重
+如果每个小value都单独写一次磁盘，就会产生大量小随机写。SSD虽然随机读写比HDD强，但高QPS小I/O仍然会浪费带宽和CPU。
 
-KV cache miss后，系统可能需要从SSD读、从远端RDMA拉取，或者重新prefill计算。
+因此小对象更适合被打包：
 
-如果多个请求同时miss同一批block，应该合并这些in-flight操作。否则会出现：
+```text
+多个小entry -> 聚合成segment/block -> 顺序写入磁盘
+```
 
-1. 多次SSD读同一个block。
-2. 多次RDMA拉同一个block。
-3. 多个prefill worker重复计算同一段prefix。
+这样可以把多次小写合并成一次较大的顺序写。代价是读取单个对象时可能要读出更大的block，再从block里解析目标entry。
 
-Foyer的fetch去重抽象可以直接映射到KV block层：同一个block hash只允许一个加载任务，其它请求等待结果。
+### 4.2 Large对象
 
-### 5.3 磁盘层要按block设计
+大对象的问题相反：如果强行打包，读写放大很明显。
 
-KV block通常是大对象，且有固定或半固定大小。相比普通key-value缓存，它更适合用ring buffer或分段文件做顺序写。
+大value通常适合独立分配空间，或者按大block切分。这样读一个大对象时不会被很多无关小对象拖累，也更容易控制磁盘空间回收。
 
-这和Foyer storage cache里的核心问题相同：磁盘层不能只看key-value语义，还要关心物理布局、I/O对齐、批量写入和回收策略。
+### 4.3 Mixed引擎
 
-## 6. 局限
+真实负载通常既有小对象也有大对象，所以Mixed引擎的意义是按value大小分流。
 
-Foyer作为通用cache库，也有通用抽象带来的边界。
+一种典型结构是：
 
-首先，业务语义有限。缓存库通常不知道某个value是否真的会被复用，只能根据访问历史做统计推断。对于强语义场景，例如LLM prefix cache，业务侧可能能提供更强的admission hint。
+```text
+value size <= threshold -> small engine
+value size > threshold  -> large engine
+```
 
-其次，hybrid cache的性能高度依赖负载。如果访问是纯随机、几乎没有复用，那么再复杂的策略也只能增加开销。Foyer适合有明显热点或温数据复用的系统。
+这个阈值不是纯理论参数，而是和设备、对象分布、压缩率、访问模式有关。阈值太小，大量中等对象走large路径，元数据和空间碎片可能变多；阈值太大，中等对象被打包后读放大明显。
 
-第三，磁盘层收益取决于SSD能力和对象大小。小对象随机读写、过高写放大、低队列深度都会削弱hybrid cache效果。
+## 5. BlockEngine和块化存储
 
-最后，通用库很难覆盖GPU/RDMA这类专用数据路径。对KV cache系统来说，Foyer的思想有价值，但实现上仍需要面向pinned memory、GPU地址、RDMA注册和block layout做专门优化。
+BlockEngine的核心是把磁盘cache组织成块或segment。
 
-## 7. 总结
+块化的好处：
 
-Foyer的贡献可以理解为：在Rust里提供一个面向生产系统的hybrid cache抽象，而不是只提供一个内存LRU。
+1. 顺序写友好。
+2. 易于批量刷盘。
+3. 元数据可以按block管理，减少每个entry的独立I/O成本。
+4. 回收时可以按block粒度判断有效数据比例。
 
-它的核心点是：
+但块化也引入问题：一个block里可能只有少量entry仍然有效，其它entry已经被覆盖或删除。此时如果保留整个block，会浪费空间；如果马上重写有效entry，又会增加写放大。
 
-1. 把memory cache和storage cache封装成统一访问接口。
-2. 用admission策略减少cache pollution和SSD写放大。
-3. 用fetch去重避免并发miss放大。
-4. 把磁盘层作为缓存系统的一等组件，处理异步I/O、布局和回收。
-5. 在Rust生态中补齐类似CacheLib的通用缓存基础设施。
+这就是为什么Foyer会有reinsertion、eviction picker一类机制。
 
-一句话概括：**Foyer的重点不是某个新的替换算法，而是把内存、SSD、准入、驱逐和并发miss合并组织成一个可复用的Rust hybrid cache系统。**
+## 6. Reinsertion：缓存里的轻量GC
+
+Reinsertion可以理解为磁盘cache里的轻量级垃圾回收。
+
+当一个block或segment要被回收时，里面可能还有一些仍然值得保留的entry。系统可以选择把这些entry重新插入新位置，而不是直接丢掉。
+
+它解决的问题是：
+
+1. 防止热点entry因为所在block被整体回收而误删。
+2. 提高磁盘层命中率。
+3. 在空间回收和数据保留之间做折中。
+
+但reinsertion不是免费午餐。重新插入会带来额外写入，所以它必须配合策略判断：只有仍然有价值的entry才值得搬迁。否则系统会变成不停地把冷数据从一个block搬到另一个block。
+
+这和LSM-tree compaction有一点相似：都在做空间回收和有效数据搬迁；区别是cache系统可以更激进地丢数据，因为cache不是唯一真相来源。
+
+## 7. Eviction Picker
+
+磁盘cache满了以后，不能只随机删文件。Foyer的eviction picker负责挑选要回收的对象、block或segment。
+
+一个好的picker需要综合几类信号：
+
+1. recency：最近是否访问过。
+2. frequency：历史访问频率。
+3. size：对象多大，回收后能释放多少空间。
+4. block有效率：回收一个block会浪费多少仍有效数据。
+5. 写放大：保留有效entry需要额外搬迁多少数据。
+
+内存cache驱逐一个entry释放的是DRAM；磁盘cache驱逐一个block释放的是磁盘空间，但可能牵连同block里的多个entry。因此磁盘层eviction比内存LRU更接近存储系统里的空间管理。
+
+## 8. Direct I/O和文件系统开销
+
+Foyer文档和文章都强调过文件系统层开销。Hybrid cache通常不希望操作系统页缓存再缓存一遍数据，因为这会出现双重缓存：
+
+```text
+应用内存cache
+-> OS page cache
+-> SSD
+```
+
+这会带来两个问题：
+
+1. 应用以为自己只用了固定DRAM，实际OS page cache又吃了一份内存。
+2. cache替换策略被拆成两套：应用层一套，内核page cache一套，二者互相不知道。
+
+Direct I/O的思路是绕过page cache，让应用自己管理缓存。代价是I/O必须满足对齐要求，例如buffer地址、offset、length要按设备块大小对齐。
+
+所以Foyer这类系统需要自己管理I/O buffer，并处理alignment、padding、block size等细节。
+
+## 9. 异步I/O和Runtime
+
+Foyer面向Rust async生态，磁盘读写不能阻塞业务任务。
+
+典型路径是：
+
+1. get请求在async任务里发起。
+2. 内存miss后向storage engine提交异步读。
+3. I/O完成后反序列化value。
+4. 根据策略插回内存层。
+5. 唤醒等待者。
+
+这里有两个关键点。
+
+第一，I/O并发度要受控。无限制地向SSD提交读写会造成队列拥塞，反而增加尾延迟。因此需要配置read/write并发、队列深度、后台flush任务等。
+
+第二，CPU任务和I/O任务要隔离。序列化、压缩、校验、解压如果都跑在核心业务runtime上，会影响请求调度。高性能cache通常会把重CPU工作放到专门线程池或后台任务里。
+
+## 10. Request Deduplication
+
+Foyer支持request deduplication，解决cache stampede问题。
+
+场景是多个请求同时访问同一个key：
+
+```text
+T1: get(k) -> miss -> fetch(k)
+T2: get(k) -> miss -> fetch(k)
+T3: get(k) -> miss -> fetch(k)
+```
+
+如果没有去重，后端会被打三次。对数据库、对象存储、远端服务来说，这是典型的雪崩放大。
+
+有dedup后，路径变成：
+
+```text
+T1: 创建 in-flight fetch(k)
+T2: 发现已有 in-flight fetch(k)，等待
+T3: 发现已有 in-flight fetch(k)，等待
+T1完成后，T2/T3共享结果
+```
+
+这个机制在hybrid cache里还可以用于磁盘读取：同一个key的并发storage miss/read不应该重复提交多个SSD I/O。
+
+对LLM KV cache系统来说，这一点尤其有用。同一个prefix block如果被多个请求同时需要，应该只从SSD/RDMA/prefill路径加载一次。
+
+## 11. 序列化和压缩
+
+磁盘cache必须把内存里的value变成字节。Foyer提供序列化/反序列化扩展点，同时也支持压缩相关能力。
+
+序列化层要关注：
+
+1. value格式是否稳定。
+2. 反序列化是否会产生大量copy。
+3. key和metadata是否需要一起写入。
+4. 版本升级后旧数据是否还能读。
+
+压缩层的收益和风险都很明确：
+
+1. 压缩可以减少磁盘空间和I/O带宽。
+2. 压缩会增加CPU开销。
+3. 小对象压缩收益可能不明显。
+4. 大对象压缩如果能显著减少读写量，可能降低端到端延迟。
+
+所以压缩不应该无脑开启。它适合I/O瓶颈明显、CPU还有余量、value可压缩性较好的负载。
+
+## 12. Flush和恢复
+
+磁盘cache虽然不是权威存储，但重启后如果能恢复缓存，会明显减少冷启动成本。
+
+恢复能力需要解决两个问题：
+
+1. 哪些磁盘entry是完整写入的。
+2. 内存索引如何从磁盘metadata重建。
+
+如果写入过程中进程崩溃，磁盘上可能留下半个block或不完整entry。恢复逻辑必须能识别并跳过这些数据，不能把损坏entry放回索引。
+
+常见做法包括：
+
+1. block header记录magic、version、length。
+2. entry带checksum。
+3. commit marker或两阶段状态区分writing/committed。
+4. 启动时扫描metadata重建索引。
+
+Foyer提供recover相关能力，本质上是在cache层做轻量持久化元数据管理。注意它和数据库WAL不同：cache允许丢数据，但不能读错数据。
+
+## 13. 可观测性
+
+Hybrid cache如果没有metrics，很难调。
+
+至少需要观察：
+
+1. memory hit / storage hit / miss比例。
+2. admission reject数量。
+3. eviction数量和原因。
+4. storage read/write latency。
+5. I/O队列深度。
+6. reinsertion数量和写放大。
+7. 序列化、压缩、解压耗时。
+8. 恢复耗时和恢复entry数量。
+
+Foyer提供observability相关接口和配置，这对生产系统很关键。因为cache问题经常不是“能不能跑”，而是“为什么命中率低、为什么尾延迟高、为什么SSD写入量异常”。
+
+## 14. 调参逻辑
+
+Foyer的参数不是越大越好，应该按负载调。
+
+### 14.1 内存容量
+
+内存层太小，热点无法保留，磁盘读压力上升。内存层太大，DRAM成本高，也可能和业务内存抢资源。
+
+经验上应该先观察对象热度分布。如果top N热点已经覆盖大部分访问，内存层只需要覆盖热点；如果访问分布很平，继续加内存收益有限。
+
+### 14.2 磁盘容量
+
+磁盘层容量决定温数据窗口。容量太小会频繁evict，命中率低；容量太大则恢复扫描、元数据内存和设备成本都会上升。
+
+### 14.3 Block大小
+
+block太小，元数据多、I/O碎片化。block太大，读放大和空间浪费明显。
+
+小对象多的负载适合较大的聚合block；大对象多的负载要避免过度打包。
+
+### 14.4 Admission策略
+
+如果负载有大量scan或一次性key，必须启用更强admission。否则cache会被污染。
+
+如果负载本身复用率很高，过强admission可能反而误拒绝新热点。
+
+### 14.5 I/O并发
+
+读并发过低，SSD利用不足；读并发过高，尾延迟变差。
+
+写并发过低，后台积压；写并发过高，会和读抢设备带宽。对在线服务来说，通常读延迟优先级高于写吞吐。
+
+## 15. 技术取舍总结
+
+Foyer的技术价值不在“Rust里写了一个LRU”，而在于它把多个缓存系统技术点组合到一个库里：
+
+1. `HybridCache`统一内存层和磁盘层。
+2. sharded memory cache降低并发锁竞争。
+3. S3-FIFO/LRU/FIFO-family等策略降低元数据维护成本。
+4. admission policy避免cache pollution和SSD写放大。
+5. Small/Large/Mixed engine按对象大小选择磁盘布局。
+6. BlockEngine用块化/segment化方式组织磁盘cache。
+7. reinsertion在回收时保留仍有价值的entry。
+8. eviction picker把驱逐从entry级扩展到block/segment级。
+9. Direct I/O绕过OS page cache，避免双重缓存。
+10. async I/O和runtime配置控制读写并发与尾延迟。
+11. request deduplication合并并发miss和并发fetch。
+12. 序列化、压缩、flush、recover补齐生产可用性。
+13. metrics/observability让命中率、写放大和延迟可诊断。
+
+一句话概括：**Foyer是把缓存策略、异步I/O、磁盘布局、准入控制、回收机制和Rust async生态组合起来的通用hybrid cache系统；它真正值得学的是这些工程技术点如何协同，而不是“用了内存加SSD”这个表层概念。**
