@@ -7,6 +7,8 @@ tags: [VLLM, LLM Inference, Parallelism, MLA, KV Cache]
 
 ## 1. 先说结论
 
+版本说明：本文参考的是2026-05-08访问的vLLM官方`latest`文档。vLLM文档页面明确提示`latest`是developer preview文档，不等同于latest stable release；因此DCP、PCP、EP等参数和行为最好以你实际安装的vLLM版本为准。生产环境建议同时查对应版本文档或直接用`vllm serve --help`确认参数是否存在。
+
 vLLM里的“并行”不是一个概念，而是一组不同层面的手段。初学者最容易混淆的是：有些并行是在**拆一个模型**，有些并行是在**复制多个模型实例**，有些并行是在**拆KV cache**，还有些并行只对MoE专家层有意义。
 
 可以先用一句话区分：
@@ -1012,7 +1014,529 @@ DP是多个模型副本分别处理不同请求。
 
 PP主要解决模型太大、层放不下的问题。decode每步仍然要顺序经过每个pipeline stage。batch小的时候，pipeline bubble会很明显。
 
-## 12. 该怎么选并行方式
+## 12. 不同并行方式的优劣和性能对比
+
+这一节专门横向比较。前面讲的是每种并行“是什么”，这里讲“什么时候用、为什么用、用了会变快还是变慢”。
+
+先给一个总表。
+
+| 并行方式 | 主要切分对象 | 主要解决什么 | 对显存的影响 | 对TTFT的影响 | 对TPOT的影响 | 主要通信 | 最适合场景 |
+|---|---|---|---|---|---|---|---|
+| TP | 单层矩阵、attention/MLP计算 | 单卡放不下、单请求算力不够 | 降低单卡权重显存；KV是否降低取决于KV head | 通常降低prefill时间，但通信过大时收益下降 | 可能降低decode计算时间，但KV重复会拖后腿 | 每层all-reduce/all-gather | 单节点多GPU、大dense模型 |
+| PP | 模型层 | 模型太深/太大，单个TP group放不下 | 降低单卡权重显存；KV按层分布 | batch足够大时可接受；小batch有pipeline bubble | decode每步要过所有stage，延迟可能变高 | stage之间传hidden states | 超大模型、多节点部署 |
+| DP | 模型副本 | 请求并发高、吞吐不够 | 每个副本一份权重和KV，总显存线性增加 | 单请求TTFT不变，但排队时间下降 | 单请求TPOT不变，但整体吞吐上升 | 主要是请求路由，模型内无跨副本通信 | 模型副本能放下、在线高并发 |
+| EP | MoE experts | MoE expert参数太大 | expert参数分散到多卡 | 取决于expert通信和负载均衡 | 取决于all-to-all和expert热点 | token all-to-all | MoE模型，尤其DeepSeek/Mixtral类 |
+| DCP | decode阶段KV cache的上下文维度 | TP下KV cache重复、长上下文显存高 | 显著降低单卡KV cache重复 | 对prefill帮助有限 | 长上下文decode更稳，但增加通信 | attention结果聚合 | MLA/GQA、KV head少、长上下文 |
+| PCP | prefill阶段上下文token维度 | 超长prompt prefill慢 | 可降低单卡activation压力 | 目标是降低长prompt TTFT | 对decode帮助有限 | attention相关通信 | 超长prompt、prefill瓶颈 |
+
+最简单的直觉是：
+
+1. **TP/PP/EP主要解决模型权重和计算怎么放。**
+2. **DP主要解决请求怎么分。**
+3. **DCP/PCP主要解决长上下文怎么切。**
+4. **MLA不是并行方式，它改变KV cache形态；DCP才是处理MLA + TP下KV重复的并行手段。**
+
+### 12.1 TP的优劣
+
+TP的优点：
+
+1. 对大多数dense模型最直接。
+2. 可以把单层大矩阵切开，降低单卡权重显存。
+3. prefill阶段通常收益明显，因为prefill矩阵乘和attention计算量大，多卡一起算容易吃满算力。
+4. 单节点8卡NVLink环境下，TP通常是最自然的起点。
+
+TP的缺点：
+
+1. 每层都有通信，通信开销高。
+2. TP越大，通信频率和同步成本越明显。
+3. 多节点TP通常比单节点TP更难跑快，因为跨节点带宽和延迟差很多。
+4. 对KV cache不一定友好，尤其KV heads少时会重复。
+
+TP对性能的影响可以粗略理解成：
+
+$$
+\mathrm{Time}_{TP}
+\approx
+\frac{\mathrm{Compute}}{\mathrm{TP}}
++ \mathrm{Communication}(\mathrm{TP})
+$$
+
+如果模型很大、计算很多，那么第一项下降明显，TP有收益。
+
+如果模型不大、batch小、上下文短，通信项可能占主导，TP开大反而变慢。
+
+适合用TP的情况：
+
+1. 模型单卡放不下。
+2. 单请求prefill很重。
+3. 单节点多GPU互联好。
+4. dense模型或attention/MLP都比较重。
+
+不适合盲目加TP的情况：
+
+1. 小模型。
+2. 短prompt、短输出。
+3. 跨节点网络一般。
+4. KV head很少但没有开DCP。
+
+例子：
+
+```bash
+# 70B dense模型，单卡放不下，8卡单节点
+vllm serve $MODEL --tensor-parallel-size 8
+```
+
+这通常合理。
+
+但如果是7B模型，一张卡已经能跑，强行TP=8可能因为通信变慢，还不如DP=8复制8份。
+
+### 12.2 PP的优劣
+
+PP的优点：
+
+1. 可以把不同层放到不同GPU，降低单卡权重显存。
+2. 比TP更适合跨节点，因为stage之间只传hidden states，不需要每层内部频繁all-reduce。
+3. 对超大模型很有用，尤其TP已经不够放的时候。
+
+PP的缺点：
+
+1. 有pipeline bubble。
+2. batch小的时候GPU容易等上一个stage或下一个stage。
+3. decode阶段天然不太舒服，因为每生成一个token都要顺序穿过所有stage。
+4. stage切分不均匀时，会被最慢stage拖住。
+
+PP的性能瓶颈可以直观理解成：
+
+$$
+\mathrm{Latency}_{PP}
+\approx
+\sum_{s=1}^{S} \mathrm{StageTime}_s
++ \mathrm{Bubble}
+$$
+
+吞吐则更接近由最慢stage决定：
+
+$$
+\mathrm{Throughput}_{PP}
+\approx
+\frac{1}{\max_s \mathrm{StageTime}_s}
+$$
+
+所以PP最怕两件事：
+
+1. stage不均衡。
+2. batch太小，bubble太大。
+
+适合用PP的情况：
+
+1. 模型太大，TP放不下。
+2. 多节点部署，跨节点TP通信太贵。
+3. batch较大，能填满pipeline。
+
+不适合优先用PP的情况：
+
+1. 单节点TP已经能解决。
+2. 强低延迟、单请求decode。
+3. 请求很零散，batch凑不起来。
+
+例子：
+
+```bash
+# 2节点，每节点8卡。节点内TP=8，节点间PP=2
+vllm serve $MODEL \
+  --tensor-parallel-size 8 \
+  --pipeline-parallel-size 2
+```
+
+这种组合的意思是：每个pipeline stage内部用8卡TP，两个stage分别放不同层。总GPU是：
+
+$$
+8 \times 2 = 16
+$$
+
+### 12.3 DP的优劣
+
+DP的优点：
+
+1. 最简单稳定。
+2. 每个副本独立处理请求，模型内部不需要跨副本通信。
+3. 扩吞吐很直接，副本数越多，可同时处理的请求越多。
+4. 对短请求、高并发服务很友好。
+
+DP的缺点：
+
+1. 每个副本都要一份完整权重。
+2. 每个副本都有独立KV cache。
+3. prefix cache默认不跨副本共享。
+4. 负载均衡会影响延迟和cache命中。
+
+DP影响的不是单个请求的计算路径，而是排队和并发。
+
+如果单个请求在一个副本上的时间是：
+
+$$
+T_{req}
+$$
+
+那么DP不会把这个请求变成：
+
+$$
+\frac{T_{req}}{\mathrm{DP}}
+$$
+
+DP做的是让多个请求并行进入不同副本。它主要降低的是排队时间，提高的是系统吞吐。
+
+适合用DP的情况：
+
+1. 模型副本已经能放下。
+2. 在线请求很多。
+3. 单请求延迟可以接受，但排队严重。
+4. 多租户、多业务流量。
+
+不适合只用DP的情况：
+
+1. 模型单副本放不下。
+2. 每个请求都是超长上下文，KV cache占用很高。
+3. 大量请求共享长前缀但路由打散，prefix cache收益会下降。
+
+例子：
+
+```bash
+# 8卡部署小模型，每卡一个副本
+vllm serve $MODEL --data-parallel-size 8
+```
+
+这对高并发短请求通常比TP=8更合理。
+
+如果模型需要2卡才能放下：
+
+```bash
+vllm serve $MODEL \
+  --data-parallel-size 4 \
+  --tensor-parallel-size 2
+```
+
+这就是4个副本，每个副本2卡。
+
+### 12.4 EP的优劣
+
+EP只对MoE模型有意义。
+
+EP的优点：
+
+1. expert参数可以分散存放。
+2. MoE每个token只激活少数expert，理论上能省计算。
+3. 对DeepSeek这类大MoE模型，EP经常是必要选项。
+
+EP的缺点：
+
+1. 需要all-to-all通信，把token发到对应expert。
+2. 如果路由不均衡，某些expert/GPU会成为热点。
+3. batch太小时，expert并行度不一定充分。
+4. 部署复杂度明显高于dense模型TP/DP。
+
+MoE层的性能大致看三部分：
+
+$$
+\mathrm{MoETime}
+\approx
+\mathrm{RouterTime}
++ \mathrm{AllToAllTime}
++ \mathrm{ExpertComputeTime}
+$$
+
+其中最容易出问题的是all-to-all和expert负载不均衡。
+
+适合用EP的情况：
+
+1. MoE模型。
+2. expert参数很多。
+3. GPU间all-to-all带宽足够。
+4. batch足够大，能摊平expert负载。
+
+不适合的情况：
+
+1. dense模型。
+2. 小MoE模型，expert本来就能放下。
+3. 网络差，all-to-all很慢。
+
+例子：
+
+```bash
+vllm serve $MODEL --enable-expert-parallel
+```
+
+对DeepSeek类MoE模型，真实生产里还会结合DP、TP和all2all backend调优。
+
+### 12.5 DCP的优劣
+
+DCP的优点：
+
+1. 直接减少decode阶段KV cache重复。
+2. 对MLA/GQA这类KV heads少的模型特别有价值。
+3. 对长上下文请求，可以显著降低单卡KV显存。
+4. 不增加GPU数量，只复用TP group里的GPU。
+
+DCP的缺点：
+
+1. 增加attention阶段通信。
+2. 主要帮助decode，对prefill帮助有限。
+3. 短上下文下可能收益不明显。
+4. DCP size不是越大越好，要看KV重复倍数和通信开销。
+
+DCP的核心收益来自减少KV重复。
+
+假设TP下KV重复倍数是：
+
+$$
+R = \frac{\mathrm{TP}}{H_{kv}}
+$$
+
+如果不加DCP，每张GPU可能存一整份重复KV。
+
+如果加DCP：
+
+$$
+\mathrm{KVPerGPU}
+\approx
+\frac{\mathrm{FullKV}}{\mathrm{DCP}}
+$$
+
+但通信也会增加，所以DCP的真实收益取决于：
+
+1. KV cache是否显存瓶颈。
+2. 上下文是否足够长。
+3. decode是否memory bandwidth bound。
+4. GPU互联是否足够好。
+
+适合用DCP的情况：
+
+1. MLA模型。
+2. $H_{kv}$很小。
+3. TP很大。
+4. 长上下文。
+5. 显存被KV cache卡住。
+
+不适合优先用DCP的情况：
+
+1. 短上下文。
+2. KV cache不是瓶颈。
+3. TP没有造成KV重复。
+4. GPU通信很差。
+
+例子：
+
+```bash
+# DeepSeek-R1类MLA模型，TP=8时KV head只有1个
+vllm serve $MODEL \
+  --tensor-parallel-size 8 \
+  --decode-context-parallel-size 8
+```
+
+这类场景DCP通常比单纯TP=8更合理。
+
+### 12.6 PCP的优劣
+
+PCP是Prefill Context Parallel。
+
+DCP切decode阶段KV cache，PCP切prefill阶段长上下文。
+
+PCP的优点：
+
+1. 目标是降低超长prompt的TTFT。
+2. 可以把长prompt的attention计算分到多卡。
+3. 对128K、256K这类长上下文prefill更有意义。
+
+PCP的缺点：
+
+1. 主要帮助prefill，不直接解决decode KV cache显存。
+2. attention通信复杂。
+3. 实现和模型/backend相关，版本可用性要确认。
+4. 对短prompt没有必要。
+
+适合用PCP的情况：
+
+1. prompt很长。
+2. TTFT是主要瓶颈。
+3. 请求输出不长，prefill占端到端大头。
+4. vLLM版本和模型backend支持。
+
+不适合优先用PCP的情况：
+
+1. decode输出很长，瓶颈在TPOT。
+2. prompt较短。
+3. 显存主要被decode KV cache卡住，这时DCP更直接。
+
+### 12.7 性能对比：几个典型场景
+
+#### 场景一：7B模型，短prompt，高并发
+
+特点：
+
+1. 模型单卡能放下。
+2. prompt短。
+3. 输出也不长。
+4. 请求很多。
+
+优先选择：
+
+```text
+DP > TP
+```
+
+原因很简单：单请求不需要多卡一起算，强行TP会引入通信。复制多个副本处理更多请求，通常更划算。
+
+推荐：
+
+```bash
+vllm serve $MODEL --data-parallel-size 8
+```
+
+#### 场景二：70B dense模型，单节点8卡
+
+特点：
+
+1. 单卡放不下。
+2. dense模型，没有expert。
+3. 单节点GPU互联好。
+
+优先选择：
+
+```text
+TP
+```
+
+推荐：
+
+```bash
+vllm serve $MODEL --tensor-parallel-size 8
+```
+
+如果KV head数量足够，TP对KV cache也比较自然。如果KV head少，再考虑DCP。
+
+#### 场景三：DeepSeek-R1类MLA模型，长上下文
+
+特点：
+
+1. MLA减少单份KV cache。
+2. vLLM里可能只有1个kv-head。
+3. TP=8时KV cache可能8倍重复。
+4. 长上下文下KV cache是显存瓶颈。
+
+优先选择：
+
+```text
+TP + DCP
+```
+
+推荐：
+
+```bash
+vllm serve $MODEL \
+  --tensor-parallel-size 8 \
+  --decode-context-parallel-size 8
+```
+
+如果通信压力太大，可以试DCP=4。
+
+#### 场景四：两节点超大模型
+
+特点：
+
+1. 单节点8卡还放不下。
+2. 跨节点网络比节点内慢。
+
+优先选择：
+
+```text
+节点内TP，节点间PP或DP
+```
+
+如果是一个超大模型副本：
+
+```bash
+--tensor-parallel-size 8
+--pipeline-parallel-size 2
+```
+
+如果每个节点能放一个副本，吞吐优先：
+
+```bash
+--tensor-parallel-size 8
+--data-parallel-size 2
+```
+
+区别是：
+
+1. PP是一个模型副本跨两节点。
+2. DP是两个独立模型副本。
+
+#### 场景五：MoE模型，expert很多
+
+特点：
+
+1. expert参数巨大。
+2. 每个token只激活少数expert。
+3. expert放置和all-to-all影响很大。
+
+优先选择：
+
+```text
+EP + DP/TP
+```
+
+推荐从：
+
+```bash
+--enable-expert-parallel
+```
+
+开始，再根据模型大小和集群拓扑叠加TP/DP。
+
+### 12.8 一个更直接的选型表
+
+| 你的问题 | 优先考虑 | 不优先考虑 |
+|---|---|---|
+| 模型单卡放不下 | TP、PP | 只用DP |
+| 请求很多但模型单卡能放下 | DP | 大TP |
+| 单节点8卡大dense模型 | TP | PP |
+| 多节点超大模型 | TP + PP | 跨节点大TP |
+| MoE expert太大 | EP | 普通dense式TP-only |
+| 长上下文decode显存爆 | DCP、KV量化、降低max_model_len | 只加DP |
+| MLA + TP下KV重复 | DCP | 继续增大TP |
+| TTFT高，prompt很长 | PCP、chunked prefill、prefix cache | 只优化decode |
+| TPOT高，输出长 | DCP、KV优化、batch调度 | 只优化prefill |
+| prefix cache命中很重要 | DP路由亲和、KV transfer | 随机负载均衡 |
+
+### 12.9 最容易犯错的性能判断
+
+第一，把“单请求变快”和“系统吞吐变高”混在一起。
+
+TP可能让单请求prefill更快；DP通常不会让单个请求更快，但能让更多请求同时跑。
+
+第二，只看权重显存，不看KV cache。
+
+长上下文服务里，KV cache可能比权重更难处理。尤其是MLA + TP，如果KV重复没有去掉，显存会被吃掉，batch size上不去，吞吐也上不去。
+
+第三，以为通信免费。
+
+TP、PP、EP、DCP都引入通信，只是通信模式不同：
+
+1. TP：每层同步，频繁。
+2. PP：stage之间传hidden states，频率较低但有pipeline延迟。
+3. EP：expert all-to-all，容易受网络和负载均衡影响。
+4. DCP：attention上下文并行通信，长上下文下收益和代价都明显。
+
+第四，忽略请求形态。
+
+同一个部署，对不同请求形态可能表现完全不同：
+
+1. 短prompt短输出：DP通常好。
+2. 长prompt短输出：prefill优化更重要。
+3. 短prompt长输出：decode和KV读取更重要。
+4. 长prompt长输出：prefill、decode、KV cache都要管。
+
+## 13. 该怎么选并行方式
 
 可以按这个顺序想。
 
@@ -1087,7 +1611,7 @@ vllm serve deepseek-ai/DeepSeek-R1 \
 
 5. 看显存、吞吐、TPOT、TTFT综合取舍。
 
-## 13. 一个8卡部署例子
+## 14. 一个8卡部署例子
 
 假设有一台8卡H100，想部署一个DeepSeek类MLA模型。
 
@@ -1159,7 +1683,7 @@ vllm serve $MODEL \
 
 或者更复杂地组合TP、DP、EP。这个要根据模型结构和集群网络细调。
 
-## 14. 一个16卡部署例子
+## 15. 一个16卡部署例子
 
 假设两台机器，每台8卡，要部署很大的MLA MoE模型。
 
@@ -1197,7 +1721,7 @@ $$
 
 如果跨节点网络很强，也可以考虑更大的TP或PP。但初始方案通常应尽量让高频通信留在单节点内部。
 
-## 15. 看指标判断是否选错
+## 16. 看指标判断是否选错
 
 ### 15.1 显存很满，但GPU利用率不高
 
@@ -1258,7 +1782,7 @@ $$
 2. 单节点内TP，跨节点DP。
 3. 检查NCCL和网络拓扑。
 
-## 16. 参数速查
+## 17. 参数速查
 
 ### 16.1 Tensor Parallel
 
@@ -1338,7 +1862,7 @@ $$
 
 注意：官方文档里PCP相关能力仍在发展中，具体可用性要看vLLM版本、模型和backend。
 
-## 17. 最后总结
+## 18. 最后总结
 
 vLLM推理并行可以按三个问题理解。
 
@@ -1365,7 +1889,7 @@ vLLM推理并行可以按三个问题理解。
 
 **TP负责把模型算起来，DP负责把请求吞下去，EP负责把MoE专家摊开，DCP负责把长上下文KV cache重复砍掉；MLA负责让单份KV cache变小，但MLA + 大TP时仍然要小心相同KV cache被复制多份。**
 
-## 18. 参考
+## 19. 参考
 
 1. vLLM官方文档：Parallelism and Scaling，https://docs.vllm.ai/en/latest/serving/parallelism_scaling.html
 2. vLLM官方文档：Context Parallel Deployment，https://docs.vllm.ai/en/latest/serving/context_parallel_deployment/
