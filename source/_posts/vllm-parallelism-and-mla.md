@@ -155,6 +155,42 @@ vLLM的PagedAttention解决的是“如何更高效地管理这些KV块”，减
 
 可以把一个请求经过模型的过程想成这样：
 
+```mermaid
+flowchart LR
+    User[请求] --> Emb[Embedding]
+    Emb --> L0[Layer 0]
+    L0 --> L1[Layer 1]
+    L1 --> LN[Layer N]
+    LN --> Head[LM Head]
+    Head --> Out[输出token]
+
+    subgraph TP[TP: 横切单层矩阵]
+        TP0[GPU0算矩阵一部分]
+        TP1[GPU1算矩阵一部分]
+        TP2[All-reduce / gather]
+    end
+
+    subgraph PP[PP: 纵切层]
+        PP0[GPU0: 前几层]
+        PP1[GPU1: 中间层]
+        PP2[GPU2: 后几层]
+    end
+
+    subgraph DP[DP: 复制模型副本]
+        DP0[副本0处理请求A]
+        DP1[副本1处理请求B]
+        DP2[副本2处理请求C]
+    end
+
+    subgraph DCP[DCP: decode时切KV上下文]
+        D0[GPU0: 部分token KV]
+        D1[GPU1: 部分token KV]
+        D2[聚合attention结果]
+    end
+```
+
+这张图不是执行顺序图，而是帮你记住“切分方向”：TP切层内部，PP切层序列，DP复制副本，DCP切decode阶段的KV上下文。
+
 ```text
 输入tokens
   -> embedding

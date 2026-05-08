@@ -880,6 +880,27 @@ hybrid模型变成：
 
 vLLM的Hybrid KV Cache Manager就是为了管理这些混合模型。
 
+可以先看模块关系：
+
+```mermaid
+flowchart TD
+    S[Scheduler] --> KVM[KVCacheManager 统一入口]
+    KVM --> C{KVCacheCoordinator}
+    C -->|单一cache类型| U[UnitaryKVCacheCoordinator]
+    C -->|多种cache类型| H[HybridKVCacheCoordinator]
+    H --> F[SingleTypeKVCacheManager: Full Attention]
+    H --> W[SingleTypeKVCacheManager: Sliding Window]
+    H --> M[SingleTypeKVCacheManager: Mamba / State]
+    H --> D[SingleTypeKVCacheManager: Compressed / DSA Cache]
+    F --> BP1[Block Pool / Prefix Cache]
+    W --> BP2[Window Blocks / Prefix Cache]
+    M --> BP3[State Cache]
+    D --> BP4[Compressed KV / Indexer / Compressor State]
+    KVM --> MR[Model Runner 使用分配结果执行forward]
+```
+
+这张图的意思是：scheduler只面对一个`KVCacheManager`接口，不直接理解full attention、sliding window、Mamba、DeepSeek V4压缩cache的区别。区别被藏在coordinator和不同的SingleTypeKVCacheManager里。
+
 官方文档定义的hybrid model包括：
 
 1. sliding window + full attention
@@ -1157,6 +1178,27 @@ full + sliding window
 6. FP8/FP4 cache dtype策略
 
 不同cache有不同大小和生命周期。
+
+可以把DeepSeek V4的一层attention粗略画成：
+
+```mermaid
+flowchart LR
+    X[输入hidden states] --> COMP[Compressor]
+    COMP --> C4A[c4a compressed KV]
+    COMP --> C128A[c128a compressed KV]
+    X --> IDX[Lightning Indexer]
+    IDX --> TOPK[Top-k compressed entries]
+    C4A --> TOPK
+    C128A --> ATTN[Main Attention]
+    TOPK --> ATTN
+    X --> SWA[Short Sliding Window KV]
+    SWA --> ATTN
+    ATTN --> OUT[Attention output]
+    COMP --> STATE[Compressor state]
+    IDX --> IKV[Indexer KV cache]
+```
+
+这张图故意画得简化。重点不是精确到每个kernel，而是说明DeepSeek V4不只有一份普通KV cache，而是同时有compressed KV、indexer cache、compressor state和局部窗口cache。
 
 vLLM为DeepSeek V4做了特殊实现：
 

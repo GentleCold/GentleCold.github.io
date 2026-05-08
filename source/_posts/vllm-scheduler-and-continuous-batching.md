@@ -306,6 +306,38 @@ worker/model runner需要知道这些请求结束了，这样才能释放KV cach
 
 最新版V1 scheduler的`scheduled()`主流程可以概括成：
 
+```mermaid
+flowchart TD
+    A[开始一次 schedule] --> B[初始化 token_budget]
+    B --> C[遍历 RUNNING 请求]
+    C --> D{请求还差多少 token}
+    D --> E[按 token_budget / threshold 截断]
+    E --> F{KV slots 够吗}
+    F -- 够 --> G[记录本轮 scheduled tokens]
+    F -- 不够 --> H[preempt 其他 running 请求释放 KV]
+    H --> F
+    G --> I[更新剩余 token_budget]
+    I --> J{RUNNING 遍历完?}
+    J -- 否 --> C
+    J -- 是 --> K[尝试调度 WAITING 请求]
+    K --> L{max_num_seqs / token_budget 还有空间?}
+    L -- 否 --> P[构造 SchedulerOutput]
+    L -- 是 --> M[检查 prefix cache / remote KV / LoRA / grammar]
+    M --> N[按 chunked prefill 决定本轮算多少 token]
+    N --> O{KV slots 够吗}
+    O -- 够 --> Q[加入 RUNNING 并记录 scheduled tokens]
+    O -- 不够 --> P
+    Q --> I
+    P --> R[发送给 model runner]
+    R --> S[forward / sample]
+    S --> T[完成请求释放 KV，未完成请求下轮继续]
+```
+
+图里最关键的是两点：
+
+1. RUNNING请求先拿预算。
+2. WAITING请求只有在还有token预算、sequence预算和KV cache时才加入。
+
 ```text
 1. 初始化本轮token_budget
 2. 先调度RUNNING请求
