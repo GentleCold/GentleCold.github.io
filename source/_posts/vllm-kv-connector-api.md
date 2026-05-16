@@ -7,7 +7,7 @@ tags: [VLLM, LLM Inference, KV Cache, Disaggregated Serving, NIXL]
 
 ## 1. 先说结论
 
-版本说明：本文参考的是2026-05-13访问的`vllm-project/vllm`官方GitHub tags和源码。远端稳定tag里已经有`v0.20.2`，并且还有`v0.21.0rc1/rc2`预发布tag；因此本文把`v0.20.2`作为“当前最新稳定版”来讲。vLLM的KV connector接口在源码里仍明确标注为experimental，所以生产环境要以你实际安装版本的源码和`vllm serve --help`为准。
+版本说明：本文最初按2026-05-13访问到的`v0.20.2`整理；2026-05-17复核`vllm-project/vllm`远端tag后，稳定tag已经推进到`v0.21.0`，后面还出现了`v0.21.1rc0`预发布tag。因此本文把`v0.21.0`作为“当前最新稳定版”来标注，主调用链仍保留`v0.20.2`以来的核心结构。KV connector接口在源码里仍明确标注为experimental，所以生产环境要以你实际安装版本的源码和`vllm serve --help`为准。
 
 一句话概括：
 
@@ -64,7 +64,7 @@ sequenceDiagram
 
 先看配置入口：`vllm/config/kv_transfer.py`。
 
-`KVTransferConfig`的核心字段在`v0.20.2`里包括：
+`KVTransferConfig`的核心字段在`v0.21.0`里包括：
 
 ```python
 kv_connector: str | None = None
@@ -150,7 +150,7 @@ return connector_cls(config, role, kv_cache_config)
 4. vLLM默认启用Hybrid KV Cache Manager时，connector类必须实现`SupportsHMA`，否则会要求用户设置`--disable-hybrid-kv-cache-manager`。
 5. 同一个connector类会被创建两次：scheduler进程里`role=SCHEDULER`，worker进程里`role=WORKER`。接口上强制分离，是为了避免scheduler直接碰GPU KV tensor，也避免worker直接改调度状态。
 
-截至`v0.20.2`，内置注册名包括：
+截至`v0.21.0`，内置注册名包括：
 
 | Connector | 典型用途 |
 |---|---|
@@ -169,7 +169,7 @@ return connector_cls(config, role, kv_cache_config)
 | `SimpleCPUOffloadConnector` | 简化版CPU KV offload |
 | `HF3FSKVConnector` | HF3FS KV connector |
 
-`NixlConnector`在`v0.20.2`里已经从单文件重构为包路径：
+`NixlConnector`在`v0.21.0`里已经从单文件重构为包路径：
 
 ```text
 vllm.distributed.kv_transfer.kv_connector.v1.nixl
@@ -345,7 +345,7 @@ register_kv_caches(kv_caches: dict[str, torch.Tensor])
 register_cross_layers_kv_cache(kv_cache, attn_backend)
 ```
 
-它服务`prefer_cross_layer_blocks=True`的connector。意思是把多层KV放在一个带`num_layers`维度的大tensor里。NIXL在`v0.20.2`里会根据backend、KV cache layout、extra config决定是否偏好cross-layer blocks。
+它服务`prefer_cross_layer_blocks=True`的connector。意思是把多层KV放在一个带`num_layers`维度的大tensor里。NIXL在`v0.21.0`里会根据backend、KV cache layout、extra config决定是否偏好cross-layer blocks。
 
 为什么有这个优化？
 
@@ -579,7 +579,7 @@ num_computed_tokens = num_new_local_computed_tokens + num_external_computed_toke
 已经可视为computed的token = 本地prefix cache命中 + 外部KV命中
 ```
 
-在`v0.20.2`里，prefill统计也在这里记录：
+在`v0.21.0`里，prefill统计也在这里记录：
 
 ```python
 request.prefill_stats.set(
@@ -618,6 +618,10 @@ num_new_tokens = min(num_new_tokens, token_budget)
 
 ### 5.4 allocate_slots：给外部KV预留GPU block
 
+异步load最容易误解的点，是“外部KV已经命中”并不等于“GPU里已经有KV”。scheduler只能先把目标位置占住，再把搬运计划交给worker执行。下面这张图把这条链路展开：
+
+<img src="/imgs/vllm-kv-connector-async-load-v2.png"/>
+
 无论同步还是异步，scheduler都要给请求分配KV block：
 
 ```python
@@ -642,6 +646,15 @@ new_blocks = self.kv_cache_manager.allocate_slots(
 5. `delay_cache_blocks=load_kv_async`：异步load时，block先分配但不能马上放进prefix cache，因为数据还没到。
 
 这一点非常关键：**外部KV命中不是只改一个计数，还必须为即将读入的KV准备GPU block位置。**
+
+可以把这里理解成两份账本：
+
+1. `request.num_computed_tokens`是调度账本，表示“只要KV成功搬进来，这些token就不必重新算”。
+2. `delay_cache_blocks=True`保护的是cache账本，表示“这些GPU block虽然已经分配给请求，但数据尚未到达，不能加入prefix cache，也不能被其他请求当作可复用命中”。
+
+只有worker后面通过`KVConnectorOutput.finished_recving`确认搬运完成，scheduler才会把这些block正式纳入本地prefix cache体系。
+
+因此异步load路径里存在三个阶段：**命中被承认、block被预留、cache被提交**。把这三件事分开，才能避免“外部命中了512个token，为什么本轮还不继续算”的困惑。
 
 ### 5.5 update_state_after_alloc：connector拿到目标block
 
@@ -975,7 +988,7 @@ expected_finished_count: int = 0
 
 ## 8. NixlConnector：P/D disaggregation的典型实现
 
-`v0.20.2`的NIXL connector拆成：
+`v0.21.0`的NIXL connector拆成：
 
 ```text
 vllm/distributed/kv_transfer/kv_connector/v1/nixl/connector.py
@@ -1570,12 +1583,12 @@ KVTransferConfig
 ## 参考
 
 1. vLLM GitHub tags：<https://github.com/vllm-project/vllm/tags>
-2. vLLM `v0.20.2` `KVTransferConfig`源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/config/kv_transfer.py>
-3. vLLM `v0.20.2` `KVConnectorBase_V1`源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/distributed/kv_transfer/kv_connector/v1/base.py>
-4. vLLM `v0.20.2` `KVConnectorFactory`源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/distributed/kv_transfer/kv_connector/factory.py>
-5. vLLM `v0.20.2` V1 Scheduler源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/v1/core/sched/scheduler.py>
-6. vLLM `v0.20.2` GPU worker KV connector源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/v1/worker/gpu/kv_connector.py>
-7. vLLM `v0.20.2` attention KV transfer hook源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/model_executor/layers/attention/kv_transfer_utils.py>
-8. vLLM `v0.20.2` NIXL connector源码：<https://github.com/vllm-project/vllm/tree/v0.20.2/vllm/distributed/kv_transfer/kv_connector/v1/nixl>
-9. vLLM `v0.20.2` Simple CPU Offload connector源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py>
-10. vLLM `v0.20.2` KVConnectorOutput源码：<https://github.com/vllm-project/vllm/blob/v0.20.2/vllm/v1/outputs.py>
+2. vLLM `v0.21.0` `KVTransferConfig`源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/config/kv_transfer.py>
+3. vLLM `v0.21.0` `KVConnectorBase_V1`源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/distributed/kv_transfer/kv_connector/v1/base.py>
+4. vLLM `v0.21.0` `KVConnectorFactory`源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/distributed/kv_transfer/kv_connector/factory.py>
+5. vLLM `v0.21.0` V1 Scheduler源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/v1/core/sched/scheduler.py>
+6. vLLM `v0.21.0` GPU worker KV connector源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/v1/worker/gpu/kv_connector.py>
+7. vLLM `v0.21.0` attention KV transfer hook源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/model_executor/layers/attention/kv_transfer_utils.py>
+8. vLLM `v0.21.0` NIXL connector源码：<https://github.com/vllm-project/vllm/tree/v0.21.0/vllm/distributed/kv_transfer/kv_connector/v1/nixl>
+9. vLLM `v0.21.0` Simple CPU Offload connector源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/distributed/kv_transfer/kv_connector/v1/simple_cpu_offload_connector.py>
+10. vLLM `v0.21.0` KVConnectorOutput源码：<https://github.com/vllm-project/vllm/blob/v0.21.0/vllm/v1/outputs.py>
