@@ -119,24 +119,22 @@
 
 !(function () {
   var MIN_SCALE = 0.5;
-  var MAX_SCALE = 3;
-  var STEP = 0.25;
+  var MAX_SCALE = 8;
+  var WHEEL_FACTOR = 1.12;
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
   }
 
-  function setScale(svg, scale) {
-    var nextScale = clamp(scale, MIN_SCALE, MAX_SCALE);
-    svg.dataset.mermaidScale = String(nextScale);
-    svg.style.transform = "scale(" + nextScale + ")";
-    svg.style.transformOrigin = "top left";
-
-    var frame = svg.closest(".mermaid-zoom-frame");
-    if (frame) {
-      frame.style.width = svg.dataset.mermaidBaseWidth * nextScale + "px";
-      frame.style.height = svg.dataset.mermaidBaseHeight * nextScale + "px";
-    }
+  function applyTransform(content, state) {
+    content.style.transform =
+      "translate(-50%, -50%) translate(" +
+      state.x +
+      "px, " +
+      state.y +
+      "px) scale(" +
+      state.scale +
+      ")";
   }
 
   function getBaseSize(svg) {
@@ -159,75 +157,154 @@
     };
   }
 
-  function createButton(label, title, onClick) {
+  function createCloseButton(onClick) {
     var button = document.createElement("button");
     button.type = "button";
-    button.className = "mermaid-zoom-btn";
-    button.textContent = label;
-    button.title = title;
-    button.setAttribute("aria-label", title);
+    button.className = "mermaid-viewer-close";
+    button.textContent = "x";
+    button.title = "关闭 Mermaid 图";
+    button.setAttribute("aria-label", "关闭 Mermaid 图");
     button.addEventListener("click", onClick);
     return button;
   }
 
-  function enhanceMermaidZoom(svg) {
-    if (svg.dataset.mermaidZoomReady === "true") {
-      return;
+  function openMermaidViewer(sourceSvg) {
+    var overlay = document.createElement("div");
+    var stage = document.createElement("div");
+    var content = document.createElement("div");
+    var clone = sourceSvg.cloneNode(true);
+    var state = {
+      scale: 1,
+      x: 0,
+      y: 0,
+      dragging: false,
+      startX: 0,
+      startY: 0,
+      originX: 0,
+      originY: 0,
+    };
+
+    overlay.className = "mermaid-viewer-overlay";
+    stage.className = "mermaid-viewer-stage";
+    content.className = "mermaid-viewer-content";
+    clone.removeAttribute("id");
+    clone.style.maxWidth = "none";
+    clone.style.width = "auto";
+    clone.style.height = "auto";
+
+    function closeViewer() {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.classList.remove("mermaid-viewer-open");
+      overlay.remove();
     }
 
-    var mermaid = svg.closest(".mermaid");
-    if (!mermaid) {
-      return;
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        closeViewer();
+      }
     }
 
-    svg.dataset.mermaidZoomReady = "true";
-    var size = getBaseSize(svg);
-    svg.dataset.mermaidBaseWidth = String(size.width);
-    svg.dataset.mermaidBaseHeight = String(size.height);
-    svg.removeAttribute("width");
-    svg.removeAttribute("height");
-    svg.style.width = size.width + "px";
-    svg.style.height = size.height + "px";
-    svg.style.maxWidth = "none";
+    function zoomAt(clientX, clientY, nextScale) {
+      var rect = content.getBoundingClientRect();
+      var oldScale = state.scale;
+      var scale = clamp(nextScale, MIN_SCALE, MAX_SCALE);
+      var localX = clientX - rect.left;
+      var localY = clientY - rect.top;
 
-    var wrap = document.createElement("div");
-    wrap.className = "mermaid-zoom-wrap";
+      state.x -= (localX / oldScale) * (scale - oldScale);
+      state.y -= (localY / oldScale) * (scale - oldScale);
+      state.scale = scale;
+      applyTransform(content, state);
+    }
 
-    var toolbar = document.createElement("div");
-    toolbar.className = "mermaid-zoom-toolbar";
+    stage.addEventListener("wheel", function (event) {
+      event.preventDefault();
+      zoomAt(
+        event.clientX,
+        event.clientY,
+        state.scale * (event.deltaY < 0 ? WHEEL_FACTOR : 1 / WHEEL_FACTOR),
+      );
+    });
 
-    var frame = document.createElement("div");
-    frame.className = "mermaid-zoom-frame";
+    stage.addEventListener("pointerdown", function (event) {
+      state.dragging = true;
+      state.startX = event.clientX;
+      state.startY = event.clientY;
+      state.originX = state.x;
+      state.originY = state.y;
+      stage.setPointerCapture(event.pointerId);
+    });
 
-    toolbar.appendChild(createButton("-", "缩小 Mermaid 图", function () {
-      setScale(svg, Number(svg.dataset.mermaidScale || 1) - STEP);
-    }));
-    toolbar.appendChild(createButton("+", "放大 Mermaid 图", function () {
-      setScale(svg, Number(svg.dataset.mermaidScale || 1) + STEP);
-    }));
-    toolbar.appendChild(createButton("1:1", "按原始尺寸显示 Mermaid 图", function () {
-      setScale(svg, 1);
-    }));
-    toolbar.appendChild(createButton("Fit", "适应文章宽度显示 Mermaid 图", function () {
-      var availableWidth = wrap.clientWidth || size.width;
-      setScale(svg, Math.min(1, availableWidth / size.width));
-      wrap.scrollLeft = 0;
-    }));
+    stage.addEventListener("pointermove", function (event) {
+      if (!state.dragging) {
+        return;
+      }
 
-    mermaid.insertBefore(wrap, svg);
-    wrap.appendChild(toolbar);
-    wrap.appendChild(frame);
-    frame.appendChild(svg);
-    setScale(svg, 1);
+      state.x = state.originX + event.clientX - state.startX;
+      state.y = state.originY + event.clientY - state.startY;
+      applyTransform(content, state);
+    });
+
+    stage.addEventListener("pointerup", function (event) {
+      state.dragging = false;
+      stage.releasePointerCapture(event.pointerId);
+    });
+
+    stage.addEventListener("pointercancel", function () {
+      state.dragging = false;
+    });
+
+    overlay.addEventListener("click", function (event) {
+      if (event.target === overlay) {
+        closeViewer();
+      }
+    });
+
+    document.addEventListener("keydown", onKeyDown);
+    content.appendChild(clone);
+    stage.appendChild(content);
+    overlay.appendChild(createCloseButton(closeViewer));
+    overlay.appendChild(stage);
+    document.body.appendChild(overlay);
+    document.body.classList.add("mermaid-viewer-open");
+
+    var size = getBaseSize(clone);
+    var fitScale = Math.min(
+      1,
+      (window.innerWidth * 0.86) / size.width,
+      (window.innerHeight * 0.82) / size.height,
+    );
+    state.scale = clamp(fitScale, MIN_SCALE, MAX_SCALE);
+    applyTransform(content, state);
   }
 
-  function enhanceAllMermaidZoom() {
-    document.querySelectorAll(".mermaid svg").forEach(enhanceMermaidZoom);
+  function enhanceMermaidViewer(svg) {
+    if (svg.dataset.mermaidViewerReady === "true") {
+      return;
+    }
+
+    svg.dataset.mermaidViewerReady = "true";
+    svg.tabIndex = 0;
+    svg.setAttribute("role", "button");
+    svg.setAttribute("aria-label", "打开 Mermaid 图查看器");
+    svg.addEventListener("click", function () {
+      openMermaidViewer(svg);
+    });
+    svg.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openMermaidViewer(svg);
+      }
+    });
+  }
+
+  function enhanceAllMermaidViewers() {
+    document.querySelectorAll(".mermaid svg").forEach(enhanceMermaidViewer);
   }
 
   var enhanceScheduled = false;
 
-  function requestEnhanceAllMermaidZoom() {
+  function requestEnhanceAllMermaidViewers() {
     if (enhanceScheduled) {
       return;
     }
@@ -235,14 +312,14 @@
     enhanceScheduled = true;
     window.requestAnimationFrame(function () {
       enhanceScheduled = false;
-      enhanceAllMermaidZoom();
+      enhanceAllMermaidViewers();
     });
   }
 
   function scheduleEnhance() {
-    setTimeout(enhanceAllMermaidZoom, 0);
-    setTimeout(enhanceAllMermaidZoom, 500);
-    setTimeout(enhanceAllMermaidZoom, 1500);
+    setTimeout(enhanceAllMermaidViewers, 0);
+    setTimeout(enhanceAllMermaidViewers, 500);
+    setTimeout(enhanceAllMermaidViewers, 1500);
   }
 
   if (document.readyState === "loading") {
@@ -253,7 +330,7 @@
 
   if ("MutationObserver" in window) {
     new MutationObserver(function () {
-      requestEnhanceAllMermaidZoom();
+      requestEnhanceAllMermaidViewers();
     }).observe(document.documentElement, {
       childList: true,
       subtree: true,

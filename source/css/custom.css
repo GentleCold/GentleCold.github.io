@@ -56,60 +56,72 @@
 }
 
 .markdown-body .mermaid {
-  text-align: left;
+  text-align: center;
 }
 
-.markdown-body code.mermaid {
-  display: block;
-  white-space: normal;
+.markdown-body .mermaid svg {
+  cursor: zoom-in;
 }
 
-.markdown-body .mermaid-zoom-wrap {
-  position: relative;
-  overflow: auto;
+body.mermaid-viewer-open {
+  overflow: hidden;
+}
+
+.mermaid-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  background: rgba(10, 15, 25, 0.92);
+}
+
+.mermaid-viewer-stage {
   width: 100%;
-  margin: 1rem 0;
-  padding: 2.5rem 0.75rem 0.75rem;
-  border: 1px solid var(--line-color, #e5e7eb);
-  border-radius: 4px;
-  background: var(--board-bg-color, #fff);
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
-.markdown-body .mermaid-zoom-toolbar {
+.mermaid-viewer-stage:active {
+  cursor: grabbing;
+}
+
+.mermaid-viewer-content {
   position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
-  z-index: 1;
-  display: flex;
-  gap: 0.25rem;
-  align-items: center;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  will-change: transform;
 }
 
-.markdown-body .mermaid-zoom-btn {
-  min-width: 2rem;
-  height: 1.75rem;
-  padding: 0 0.5rem;
-  border: 1px solid var(--line-color, #d1d5db);
+.mermaid-viewer-content > svg {
+  display: block;
+  min-width: 0;
+  max-width: none !important;
+  background: #fff;
   border-radius: 4px;
-  color: var(--text-color, #2c3e50);
-  background: var(--board-bg-color, #fff);
-  font-size: 0.8125rem;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+}
+
+.mermaid-viewer-close {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
 }
 
-.markdown-body .mermaid-zoom-btn:hover,
-.markdown-body .mermaid-zoom-btn:focus {
-  border-color: #2c3e50;
+.mermaid-viewer-close:hover,
+.mermaid-viewer-close:focus {
+  background: rgba(255, 255, 255, 0.18);
   outline: none;
-}
-
-.markdown-body .mermaid-zoom-frame {
-  position: relative;
-}
-
-.markdown-body .mermaid-zoom-frame > svg {
-  display: block;
-  min-width: 0 !important;
-  max-width: none !important;
 }
