@@ -197,7 +197,6 @@
     overlay.className = "mermaid-viewer-overlay";
     stage.className = "mermaid-viewer-stage";
     content.className = "mermaid-viewer-content";
-    clone.removeAttribute("id");
     setViewerSize(clone, size);
     content.style.width = size.width + "px";
     content.style.height = size.height + "px";

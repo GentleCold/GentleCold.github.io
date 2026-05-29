@@ -17,6 +17,7 @@ assert.match(customJs, /svg\.style\.width = size\.width \+ "px"/, 'fullscreen Me
 assert.match(customJs, /svg\.style\.height = size\.height \+ "px"/, 'fullscreen Mermaid clone should keep its natural height');
 assert.doesNotMatch(customJs, /clone\.style\.width = "auto"/, 'fullscreen Mermaid clone should not use auto width');
 assert.doesNotMatch(customJs, /clone\.style\.height = "auto"/, 'fullscreen Mermaid clone should not use auto height');
+assert.doesNotMatch(customJs, /clone\.removeAttribute\(["']id["']\)/, 'fullscreen Mermaid clone should keep its id-scoped Mermaid styles');
 assert.doesNotMatch(customJs, /mermaid-zoom-wrap/, 'custom.js should not wrap inline Mermaid diagrams');
 assert.doesNotMatch(customJs, /mermaid-zoom-toolbar/, 'custom.js should not add inline Mermaid toolbars');
 
