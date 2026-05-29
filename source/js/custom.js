@@ -116,3 +116,147 @@
   update();
   setInterval(update, 1000);
 })();
+
+!(function () {
+  var MIN_SCALE = 0.5;
+  var MAX_SCALE = 3;
+  var STEP = 0.25;
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function setScale(svg, scale) {
+    var nextScale = clamp(scale, MIN_SCALE, MAX_SCALE);
+    svg.dataset.mermaidScale = String(nextScale);
+    svg.style.transform = "scale(" + nextScale + ")";
+    svg.style.transformOrigin = "top left";
+
+    var frame = svg.closest(".mermaid-zoom-frame");
+    if (frame) {
+      frame.style.width = svg.dataset.mermaidBaseWidth * nextScale + "px";
+      frame.style.height = svg.dataset.mermaidBaseHeight * nextScale + "px";
+    }
+  }
+
+  function getBaseSize(svg) {
+    var box = null;
+    try {
+      box = svg.getBBox ? svg.getBBox() : null;
+    } catch (e) {
+      box = null;
+    }
+
+    var width = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width;
+    var height = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height;
+
+    width = width || Number(svg.getAttribute("width")) || (box && box.width) || svg.clientWidth;
+    height = height || Number(svg.getAttribute("height")) || (box && box.height) || svg.clientHeight;
+
+    return {
+      width: Math.ceil(width || 1),
+      height: Math.ceil(height || 1),
+    };
+  }
+
+  function createButton(label, title, onClick) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "mermaid-zoom-btn";
+    button.textContent = label;
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function enhanceMermaidZoom(svg) {
+    if (svg.dataset.mermaidZoomReady === "true") {
+      return;
+    }
+
+    var mermaid = svg.closest(".mermaid");
+    if (!mermaid) {
+      return;
+    }
+
+    svg.dataset.mermaidZoomReady = "true";
+    var size = getBaseSize(svg);
+    svg.dataset.mermaidBaseWidth = String(size.width);
+    svg.dataset.mermaidBaseHeight = String(size.height);
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    svg.style.width = size.width + "px";
+    svg.style.height = size.height + "px";
+    svg.style.maxWidth = "none";
+
+    var wrap = document.createElement("div");
+    wrap.className = "mermaid-zoom-wrap";
+
+    var toolbar = document.createElement("div");
+    toolbar.className = "mermaid-zoom-toolbar";
+
+    var frame = document.createElement("div");
+    frame.className = "mermaid-zoom-frame";
+
+    toolbar.appendChild(createButton("-", "缩小 Mermaid 图", function () {
+      setScale(svg, Number(svg.dataset.mermaidScale || 1) - STEP);
+    }));
+    toolbar.appendChild(createButton("+", "放大 Mermaid 图", function () {
+      setScale(svg, Number(svg.dataset.mermaidScale || 1) + STEP);
+    }));
+    toolbar.appendChild(createButton("1:1", "按原始尺寸显示 Mermaid 图", function () {
+      setScale(svg, 1);
+    }));
+    toolbar.appendChild(createButton("Fit", "适应文章宽度显示 Mermaid 图", function () {
+      var availableWidth = wrap.clientWidth || size.width;
+      setScale(svg, Math.min(1, availableWidth / size.width));
+      wrap.scrollLeft = 0;
+    }));
+
+    mermaid.insertBefore(wrap, svg);
+    wrap.appendChild(toolbar);
+    wrap.appendChild(frame);
+    frame.appendChild(svg);
+    setScale(svg, 1);
+  }
+
+  function enhanceAllMermaidZoom() {
+    document.querySelectorAll(".mermaid svg").forEach(enhanceMermaidZoom);
+  }
+
+  var enhanceScheduled = false;
+
+  function requestEnhanceAllMermaidZoom() {
+    if (enhanceScheduled) {
+      return;
+    }
+
+    enhanceScheduled = true;
+    window.requestAnimationFrame(function () {
+      enhanceScheduled = false;
+      enhanceAllMermaidZoom();
+    });
+  }
+
+  function scheduleEnhance() {
+    setTimeout(enhanceAllMermaidZoom, 0);
+    setTimeout(enhanceAllMermaidZoom, 500);
+    setTimeout(enhanceAllMermaidZoom, 1500);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", scheduleEnhance);
+  } else {
+    scheduleEnhance();
+  }
+
+  if ("MutationObserver" in window) {
+    new MutationObserver(function () {
+      requestEnhanceAllMermaidZoom();
+    }).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+  }
+})();

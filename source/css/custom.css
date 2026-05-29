@@ -54,3 +54,62 @@
 #banner {
   box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
 }
+
+.markdown-body .mermaid {
+  text-align: left;
+}
+
+.markdown-body code.mermaid {
+  display: block;
+  white-space: normal;
+}
+
+.markdown-body .mermaid-zoom-wrap {
+  position: relative;
+  overflow: auto;
+  width: 100%;
+  margin: 1rem 0;
+  padding: 2.5rem 0.75rem 0.75rem;
+  border: 1px solid var(--line-color, #e5e7eb);
+  border-radius: 4px;
+  background: var(--board-bg-color, #fff);
+}
+
+.markdown-body .mermaid-zoom-toolbar {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.markdown-body .mermaid-zoom-btn {
+  min-width: 2rem;
+  height: 1.75rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--line-color, #d1d5db);
+  border-radius: 4px;
+  color: var(--text-color, #2c3e50);
+  background: var(--board-bg-color, #fff);
+  font-size: 0.8125rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.markdown-body .mermaid-zoom-btn:hover,
+.markdown-body .mermaid-zoom-btn:focus {
+  border-color: #2c3e50;
+  outline: none;
+}
+
+.markdown-body .mermaid-zoom-frame {
+  position: relative;
+}
+
+.markdown-body .mermaid-zoom-frame > svg {
+  display: block;
+  min-width: 0 !important;
+  max-width: none !important;
+}

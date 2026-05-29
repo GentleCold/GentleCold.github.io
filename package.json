@@ -6,6 +6,7 @@
     "build": "hexo generate",
     "clean": "hexo clean",
     "deploy": "hexo deploy",
+    "test": "node scripts/check-mermaid-zoom.js",
     "server": "hexo server"
   },
   "hexo": {
