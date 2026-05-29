@@ -128,7 +128,7 @@
 
   function applyTransform(content, state) {
     content.style.transform =
-      "translate(-50%, -50%) translate(" +
+      "translate(" +
       state.x +
       "px, " +
       state.y +
@@ -157,6 +157,15 @@
     };
   }
 
+  function setViewerSize(svg, size) {
+    svg.setAttribute("width", size.width);
+    svg.setAttribute("height", size.height);
+    svg.style.width = size.width + "px";
+    svg.style.height = size.height + "px";
+    svg.style.maxWidth = "none";
+    svg.style.maxHeight = "none";
+  }
+
   function createCloseButton(onClick) {
     var button = document.createElement("button");
     button.type = "button";
@@ -173,10 +182,11 @@
     var stage = document.createElement("div");
     var content = document.createElement("div");
     var clone = sourceSvg.cloneNode(true);
+    var size = getBaseSize(sourceSvg);
     var state = {
       scale: 1,
-      x: 0,
-      y: 0,
+      x: window.innerWidth / 2 - size.width / 2,
+      y: window.innerHeight / 2 - size.height / 2,
       dragging: false,
       startX: 0,
       startY: 0,
@@ -188,9 +198,9 @@
     stage.className = "mermaid-viewer-stage";
     content.className = "mermaid-viewer-content";
     clone.removeAttribute("id");
-    clone.style.maxWidth = "none";
-    clone.style.width = "auto";
-    clone.style.height = "auto";
+    setViewerSize(clone, size);
+    content.style.width = size.width + "px";
+    content.style.height = size.height + "px";
 
     function closeViewer() {
       document.removeEventListener("keydown", onKeyDown);
@@ -205,14 +215,11 @@
     }
 
     function zoomAt(clientX, clientY, nextScale) {
-      var rect = content.getBoundingClientRect();
       var oldScale = state.scale;
       var scale = clamp(nextScale, MIN_SCALE, MAX_SCALE);
-      var localX = clientX - rect.left;
-      var localY = clientY - rect.top;
 
-      state.x -= (localX / oldScale) * (scale - oldScale);
-      state.y -= (localY / oldScale) * (scale - oldScale);
+      state.x = clientX - ((clientX - state.x) / oldScale) * scale;
+      state.y = clientY - ((clientY - state.y) / oldScale) * scale;
       state.scale = scale;
       applyTransform(content, state);
     }
@@ -268,13 +275,14 @@
     document.body.appendChild(overlay);
     document.body.classList.add("mermaid-viewer-open");
 
-    var size = getBaseSize(clone);
     var fitScale = Math.min(
       1,
       (window.innerWidth * 0.86) / size.width,
       (window.innerHeight * 0.82) / size.height,
     );
     state.scale = clamp(fitScale, MIN_SCALE, MAX_SCALE);
+    state.x = (window.innerWidth - size.width * state.scale) / 2;
+    state.y = (window.innerHeight - size.height * state.scale) / 2;
     applyTransform(content, state);
   }
 

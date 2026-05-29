@@ -89,9 +89,9 @@ body.mermaid-viewer-open {
 
 .mermaid-viewer-content {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform-origin: center center;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
   will-change: transform;
 }
 

@@ -12,6 +12,11 @@ assert.match(customJs, /openMermaidViewer/, 'custom.js should open a fullscreen 
 assert.match(customJs, /wheel/, 'custom.js should support wheel zoom in the Mermaid viewer');
 assert.match(customJs, /pointermove/, 'custom.js should support dragging in the Mermaid viewer');
 assert.match(customJs, /scale\("/, 'custom.js should scale Mermaid SVGs in the viewer');
+assert.match(customJs, /setViewerSize\(clone, size\)/, 'fullscreen Mermaid clone should get an explicit viewer size');
+assert.match(customJs, /svg\.style\.width = size\.width \+ "px"/, 'fullscreen Mermaid clone should keep its natural width');
+assert.match(customJs, /svg\.style\.height = size\.height \+ "px"/, 'fullscreen Mermaid clone should keep its natural height');
+assert.doesNotMatch(customJs, /clone\.style\.width = "auto"/, 'fullscreen Mermaid clone should not use auto width');
+assert.doesNotMatch(customJs, /clone\.style\.height = "auto"/, 'fullscreen Mermaid clone should not use auto height');
 assert.doesNotMatch(customJs, /mermaid-zoom-wrap/, 'custom.js should not wrap inline Mermaid diagrams');
 assert.doesNotMatch(customJs, /mermaid-zoom-toolbar/, 'custom.js should not add inline Mermaid toolbars');
 
