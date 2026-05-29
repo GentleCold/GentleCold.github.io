@@ -499,11 +499,180 @@ request_finished(request, block_ids) -> tuple[bool, dict[str, Any] | None]
 
 第二项是`kv_transfer_params`，会进入请求输出。P/D disaggregation里，prefill侧结束后通常会把远端读取所需的参数返回给上层router或decode侧，例如remote block ids、remote engine id、host、port等。
 
-## 5. Scheduler推理调用链逐行讲解
+## 5. KVConnectorBase_V1函数速查表与调用时序图
+
+这一节把`KVConnectorBase_V1`和`base.py`里相关小接口的函数按调用位置完整过一遍。前面讲的是重点调用链，这里更像查表：写connector时可以逐项对照“谁调用、什么时候调用、默认行为是什么”。
+
+### 5.1 初始化、属性和layout能力声明
+
+| 函数/属性 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `__init__(vllm_config, role, kv_cache_config)` | `KVConnectorFactory` | 保存配置、角色、KV cache配置，并要求`kv_transfer_config`存在 | 如果没有`kv_transfer_config`直接报错 |
+| `role` | connector内部或调试代码 | 返回当前实例是`scheduler`侧还是`worker`侧 | 返回`self._role` |
+| `prefer_cross_layer_blocks` | worker初始化KV cache时 | 声明connector是否希望使用cross-layer KV layout | `False` |
+| `get_required_kvcache_layout(vllm_config)` | 配置/初始化检查 | 声明connector强制要求`HND`或`NHD`等KV layout | `None` |
+| `requires_piecewise_for_cudagraph(extra_config)` | 配置检查 | 如果connector依赖layer-wise Python hook，需要FULL CUDA graph降级到PIECEWISE | `False` |
+
+这里最容易混的是`prefer_cross_layer_blocks`和`get_required_kvcache_layout()`。前者说的是“是否希望把多层KV放进一个cross-layer大tensor”，后者说的是“单层KV内部head/token维度要用什么layout”。NIXL通常会要求或偏好特定layout，是为了让远程传输时block更连续、描述符更少。
+
+### 5.2 worker侧metadata生命周期
+
+| 函数 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `bind_connector_metadata(connector_metadata)` | model runner forward前 | 把`SchedulerOutput.kv_connector_metadata`绑定到worker connector | 保存到`self._connector_metadata` |
+| `clear_connector_metadata()` | model runner forward后 | 清理本轮metadata，防止下一轮误用 | 置空 |
+| `_get_connector_metadata()` | connector内部 | 读取当前step的metadata | 没绑定时`assert`失败 |
+| `has_connector_metadata()` | attention hook/connector辅助逻辑 | 判断当前是否有有效metadata | 返回是否非空 |
+
+这组函数是worker侧每个engine step的上下文开关。scheduler侧把计划封装成metadata，worker侧先`bind`，然后`start_load_kv()`、`save_kv_layer()`等方法都从这里读本轮计划。
+
+### 5.3 worker侧KV cache注册和host buffer拷贝
+
+| 函数 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `register_kv_caches(kv_caches)` | worker初始化KV cache后 | 把每层KV cache tensor交给connector，便于注册内存或建立索引 | no-op |
+| `register_cross_layers_kv_cache(kv_cache, attn_backend)` | 启用cross-layer layout时 | 注册一个包含所有层KV的大tensor | no-op |
+| `set_host_xfer_buffer_ops(copy_operation)` | worker初始化connector后 | 注入GPU KV cache和CPU host staging buffer之间的block copy函数 | no-op |
+
+`set_host_xfer_buffer_ops()`不是让vLLM接管host buffer。以NIXL为例，host staging buffer由connector分配和管理；vLLM只是把`copy_kv_blocks()`这种平台相关的“按block做h2d/d2h copy”的函数传进去。
+
+### 5.4 worker侧load/save主路径
+
+| 函数 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `handle_preemptions(kv_connector_metadata)` | model runner执行前 | 在block被抢占/覆盖前处理未完成的异步save | no-op |
+| `start_load_kv(forward_context, **kwargs)` | forward开始前 | 启动外部KV到vLLM paged KV buffer的load | 抽象方法，必须实现 |
+| `wait_for_layer_load(layer_name)` | attention layer执行前 | 等当前层需要的KV load完成 | 抽象方法，必须实现 |
+| `save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)` | attention layer执行后 | 把本层新KV保存到外部系统 | 抽象方法，必须实现 |
+| `wait_for_save()` | forward结束时 | 等save完成，避免KV block被复用时数据还没保存完 | 抽象方法，必须实现 |
+| `get_finished(finished_req_ids)` | forward后收集connector输出 | 返回已完成异步send/save和recv/load的请求id | `(None, None)` |
+| `get_block_ids_with_load_errors()` | forward后收集connector输出 | 返回load失败的block ids，供scheduler fail或recompute | 空集合 |
+| `shutdown()` | worker退出 | 清理线程、网络连接、异步copy等资源 | no-op |
+
+这组函数是真正的数据路径。同步connector可以在`start_load_kv()`里把KV全部加载好，`wait_for_layer_load()`变成no-op；异步connector则可能在`start_load_kv()`里提交DMA/RDMA，在`wait_for_layer_load()`里做细粒度同步。
+
+### 5.5 worker侧统计、事件和回传metadata
+
+| 函数 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `get_kv_connector_stats()` | forward后 | 返回本周期connector传输统计 | `None` |
+| `get_kv_connector_kv_cache_events()` | forward后 | 返回connector侧产生的KV cache events | `None` |
+| `get_handshake_metadata()` | worker握手阶段 | 返回对端需要的out-of-band握手信息 | `None` |
+| `build_connector_worker_meta()` | forward后 | 构造worker回传给scheduler-side connector的metadata | `None` |
+
+`get_finished()`只能表达“哪些请求完成了send/recv”。如果connector还要回传更细的状态，例如某个store event在所有TP rank都完成了，就要用`build_connector_worker_meta()`和`KVConnectorWorkerMetadata.aggregate()`。
+
+### 5.6 scheduler侧调度主路径
+
+| 函数 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `get_num_new_matched_tokens(request, num_computed_tokens)` | scheduler调度waiting request时 | 查询外部KV cache还能命中多少token，以及是否异步load | 抽象方法，必须实现 |
+| `update_state_after_alloc(request, blocks, num_external_tokens)` | scheduler分配block后 | 告诉connector本请求拿到了哪些本地block，便于生成load/store计划 | 抽象方法，必须实现 |
+| `build_connector_meta(scheduler_output)` | scheduler生成`SchedulerOutput`前 | 把本轮connector计划打包成`KVConnectorMetadata`发给worker | 抽象方法，必须实现 |
+| `update_connector_output(connector_output)` | scheduler处理worker输出时 | 消费worker侧回传的完成状态、worker metadata、统计等 | no-op |
+| `request_finished(request, block_ids)` | 请求完成、释放block前 | 决定connector是否要延迟释放这些block，并可返回`kv_transfer_params` | `(False, None)` |
+| `take_events()` | scheduler每步末尾 | 取connector产生的KV cache events并发布 | 空迭代器 |
+
+其中`get_num_new_matched_tokens()`要尽量保持side-effect free。scheduler可能因为预算、LoRA限制、block不足、异步load完成等原因，对同一个请求多次询问外部命中。
+
+### 5.7 多worker聚合、指标和cache控制
+
+| 函数/接口 | 调用方 | 作用 | 默认行为 |
+|---|---|---|---|
+| `get_finished_count()` | `KVOutputAggregator`初始化 | 覆盖默认按`world_size`聚合完成数的逻辑 | `None` |
+| `build_kv_connector_stats(data)` | executor/统计聚合路径 | 从dict构造connector自定义stats对象 | `None` |
+| `set_xfer_handshake_metadata(metadata)` | engine握手完成后 | 把其他worker/engine的握手metadata注入本connector | no-op |
+| `build_prom_metrics(vllm_config, metric_types, labelnames, per_engine_labelvalues)` | metrics初始化 | 注册connector自定义Prometheus指标 | `None` |
+| `reset_cache()` | reset prefix/cache相关路径 | 重置connector内部cache | 记录debug并返回`None` |
+| `SupportsHMA.request_finished_all_groups(request, block_ids)` | HMA开启时请求完成路径 | 多KV cache group版本的`request_finished()` | 实现类必须提供 |
+| `supports_hma(connector)` | `KVConnectorFactory` | 判断connector类或实例是否继承/实现`SupportsHMA` | 返回布尔值 |
+| `KVConnectorWorkerMetadata.aggregate(other)` | executor聚合worker输出 | 多worker/多rank的worker metadata合并 | 实现类必须提供 |
+
+`get_finished_count()`常见于完成事件不等于`world_size`的connector。例如某些传输只需要一个rank回报，或者connector内部已经做过聚合，就不能让executor再按所有worker强行等待。
+
+### 5.8 全函数调用时序图
+
+下面这张图把`base.py`里所有主要函数放到生命周期里。实线是主路径，虚线是可选能力或只在特定配置下调用。
+
+```mermaid
+sequenceDiagram
+    participant F as KVConnectorFactory/Engine Init
+    participant S as Scheduler-side Connector
+    participant E as Engine/Scheduler
+    participant W as Worker-side Connector
+    participant M as ModelRunner/Attention
+    participant X as Remote KV / Host Buffer / External Cache
+    participant O as Executor/Aggregator/Metrics
+
+    F->>S: __init__(..., role=SCHEDULER, ...)
+    F->>W: __init__(..., role=WORKER, ...)
+    F->>S: get_required_kvcache_layout()
+    F->>S: requires_piecewise_for_cudagraph()
+    F->>W: prefer_cross_layer_blocks
+    alt 普通per-layer KV cache
+        M->>W: register_kv_caches(kv_caches)
+    else cross-layer KV cache
+        M->>W: register_cross_layers_kv_cache(kv_cache, attn_backend)
+    end
+    M->>W: set_host_xfer_buffer_ops(copy_kv_blocks)
+    W-->>E: get_handshake_metadata()
+    E->>S: set_xfer_handshake_metadata(all_worker_metadata)
+    O->>S: build_prom_metrics(...)
+
+    loop 每个scheduler step
+        E->>S: get_num_new_matched_tokens(request, local_hit)
+        S-->>E: (external_tokens, load_kv_async)
+        E->>E: allocate_slots(...)
+        E->>S: update_state_after_alloc(request, blocks, external_tokens)
+        E->>S: build_connector_meta(scheduler_output)
+        S-->>E: KVConnectorMetadata
+
+        E->>M: execute_model(SchedulerOutput)
+        M->>W: bind_connector_metadata(metadata)
+        M->>W: handle_preemptions(metadata)
+        M->>W: has_connector_metadata()
+        M->>W: start_load_kv(forward_context)
+        W-->>X: submit/load/read KV
+        loop 每个attention layer
+            M->>W: wait_for_layer_load(layer_name)
+            M->>M: attention forward
+            M->>W: save_kv_layer(layer_name, kv_layer, attn_metadata)
+            W-->>X: submit/save/write KV
+        end
+        M->>W: wait_for_save()
+        M->>W: get_finished(finished_req_ids)
+        M->>W: get_block_ids_with_load_errors()
+        M->>W: get_kv_connector_stats()
+        M->>W: get_kv_connector_kv_cache_events()
+        M->>W: build_connector_worker_meta()
+        M->>W: clear_connector_metadata()
+        W-->>O: KVConnectorOutput
+
+        O->>O: KVConnectorWorkerMetadata.aggregate()
+        O->>S: update_connector_output(connector_output)
+        O->>S: build_kv_connector_stats(data)
+        E->>S: take_events()
+    end
+
+    E->>S: request_finished(request, block_ids)
+    alt HMA / multiple kv_cache_groups
+        E->>S: request_finished_all_groups(request, block_id_groups)
+    end
+    O->>S: get_finished_count()
+    E->>S: reset_cache()
+    E->>W: shutdown()
+```
+
+这张图里有两个容易忽略的点：
+
+1. `register_kv_caches()`和`register_cross_layers_kv_cache()`二选一。启用cross-layer blocks时，vLLM内部实际分配的是一个跨层大tensor，然后给每层attention切view。
+2. `get_handshake_metadata()`和`set_xfer_handshake_metadata()`不是每个connector都需要。NIXL、Mooncake这类跨进程/跨机器connector需要交换地址、agent、memory region等信息；纯本地CPU offload可能不需要。
+
+## 6. Scheduler推理调用链逐行讲解
 
 下面看`vllm/v1/core/sched/scheduler.py`。
 
-### 5.1 Scheduler初始化时创建scheduler-side connector
+### 6.1 Scheduler初始化时创建scheduler-side connector
 
 初始化阶段的关键代码：
 
@@ -527,7 +696,7 @@ if self.vllm_config.kv_transfer_config is not None:
 
 注意：这里还禁止encoder-decoder模型使用KV connector，因为相关路径还没有完整支持。
 
-### 5.2 第一次调度请求：先查本地cache，再查外部cache
+### 6.2 第一次调度请求：先查本地cache，再查外部cache
 
 在waiting队列调度新请求时，核心代码从`request.num_computed_tokens == 0`开始。
 
@@ -591,7 +760,7 @@ request.prefill_stats.set(
 
 这就是为什么指标里能区分本地cache hit和external KV transfer。
 
-### 5.3 异步load时，本轮不算新token
+### 6.3 异步load时，本轮不算新token
 
 如果connector返回`load_kv_async=True`：
 
@@ -616,7 +785,7 @@ num_new_tokens = min(num_new_tokens, token_budget)
 
 也就是直接把外部命中视作已经就绪，然后继续调度剩余token计算。
 
-### 5.4 allocate_slots：给外部KV预留GPU block
+### 6.4 allocate_slots：给外部KV预留GPU block
 
 异步load最容易误解的点，是“外部KV已经命中”并不等于“GPU里已经有KV”。scheduler只能先把目标位置占住，再把搬运计划交给worker执行。下面这张图把这条链路展开：
 
@@ -656,7 +825,7 @@ new_blocks = self.kv_cache_manager.allocate_slots(
 
 因此异步load路径里存在三个阶段：**命中被承认、block被预留、cache被提交**。把这三件事分开，才能避免“外部命中了512个token，为什么本轮还不继续算”的困惑。
 
-### 5.5 update_state_after_alloc：connector拿到目标block
+### 6.5 update_state_after_alloc：connector拿到目标block
 
 分配成功后：
 
@@ -685,7 +854,7 @@ CPU block id -> GPU block id
 
 的传输对。
 
-### 5.6 异步load请求进入WAITING_FOR_REMOTE_KVS
+### 6.6 异步load请求进入WAITING_FOR_REMOTE_KVS
 
 如果`load_kv_async=True`：
 
@@ -703,7 +872,7 @@ continue
 3. `request.num_computed_tokens`提前设置为“本地+外部命中”的数量，但注释强调：在transfer完成前，不会使用这个值继续计算。
 4. 如果transfer失败，后面会通过`_update_requests_with_invalid_blocks()`把这个计数往回调。
 
-### 5.7 build_connector_meta：调度输出里携带传输计划
+### 6.7 build_connector_meta：调度输出里携带传输计划
 
 本轮`scheduler_output`构建完成后：
 
@@ -720,7 +889,7 @@ scheduler_output.kv_connector_metadata = meta
 
 注意这里不是只给异步load用。即使本轮没有远程load，也可能有store计划，例如把刚算完的KV保存到外部cache。
 
-### 5.8 worker回传后，scheduler如何恢复请求
+### 6.8 worker回传后，scheduler如何恢复请求
 
 模型执行结束后，scheduler在`_update_from_kv_xfer_finished()`里处理`KVConnectorOutput`。
 
@@ -757,7 +926,7 @@ for req_id in kv_connector_output.finished_sending or ():
 
 这对应`request_finished()`返回`True`的情况：请求结束时没有释放block，等send完成后再释放。
 
-### 5.9 WAITING_FOR_REMOTE_KVS如何重新进入调度
+### 6.9 WAITING_FOR_REMOTE_KVS如何重新进入调度
 
 下一次调度时，scheduler会尝试提升blocked waiting request：
 
@@ -781,7 +950,7 @@ if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
 
 因为decode要基于最后一个prompt token的输出logits采样下一个token；KV cache只保存attention历史，不等于已经有当前step的采样结果。
 
-### 5.10 加载失败：fail还是recompute
+### 6.10 加载失败：fail还是recompute
 
 worker侧如果发现外部KV加载失败，会把block id放到：
 
@@ -796,11 +965,11 @@ scheduler先调用`_handle_invalid_blocks()`找受影响请求，然后：
 
 这就是为什么connector必须只报告“确实加载失败的block id”，否则可能导致错误重算或错误失败。
 
-## 6. Worker推理调用链逐行讲解
+## 7. Worker推理调用链逐行讲解
 
 worker侧主入口在`vllm/v1/worker/gpu/kv_connector.py`和`gpu/model_runner.py`。
 
-### 6.1 Worker初始化：全局KV transfer group
+### 7.1 Worker初始化：全局KV transfer group
 
 worker初始化KV cache前会调用：
 
@@ -833,7 +1002,7 @@ self.kv_connector = get_kv_connector(self.vllm_config, kv_caches_dict)
 
 如果没有全局KV transfer group，返回`NO_OP_KV_CONNECTOR`；否则返回`ActiveKVConnector`。
 
-### 6.2 ActiveKVConnector初始化：注册KV cache
+### 7.2 ActiveKVConnector初始化：注册KV cache
 
 `ActiveKVConnector.__init__()`做三件事：
 
@@ -851,7 +1020,7 @@ self.kv_connector.set_host_xfer_buffer_ops(copy_kv_blocks)
 
 这个注册动作很重要。没有它，connector只知道“block id”，不知道“block id对应哪块tensor内存”。
 
-### 6.3 forward前：bind metadata、处理抢占、启动load
+### 7.3 forward前：bind metadata、处理抢占、启动load
 
 `ActiveKVConnector.pre_forward()`：
 
@@ -871,7 +1040,7 @@ self.kv_connector.start_load_kv(get_forward_context())
 
 `pre_forward()`对full CUDA graph路径和eager/piecewise路径都要调用。对full graph，vLLM在`run_fullgraph()`之前调用；对eager/piecewise，vLLM在`set_forward_context(...)`上下文中调用。
 
-### 6.4 attention层：decorator插入layer级同步和保存
+### 7.4 attention层：decorator插入layer级同步和保存
 
 KV connector真正靠近attention的地方是`maybe_transfer_kv_layer`。
 
@@ -913,7 +1082,7 @@ return result
 
 这就是layer-by-layer connector能够做pipeline的原因：它可以在layer N计算时异步准备layer N+1的KV，也可以在layer N结束后立即保存layer N的KV。
 
-### 6.5 forward后：等待保存并回传状态
+### 7.5 forward后：等待保存并回传状态
 
 `ActiveKVConnector.post_forward()`：
 
@@ -953,7 +1122,7 @@ kv_connector_output = self.post_forward(scheduler_output, wait_for_save=False)
 
 这保证了即使没有GPU compute，也能推进异步KV传输状态。
 
-## 7. KVConnectorOutput：worker如何告诉scheduler发生了什么
+## 8. KVConnectorOutput：worker如何告诉scheduler发生了什么
 
 `vllm/v1/outputs.py`里的`KVConnectorOutput`字段：
 
@@ -986,7 +1155,7 @@ expected_finished_count: int = 0
 
 这解释了为什么自定义stats和worker metadata要实现自己的聚合逻辑：vLLM可能有多个worker同时返回connector输出。
 
-## 8. NixlConnector：P/D disaggregation的典型实现
+## 9. NixlConnector：P/D disaggregation的典型实现
 
 `v0.21.0`的NIXL connector拆成：
 
@@ -997,7 +1166,7 @@ vllm/distributed/kv_transfer/kv_connector/v1/nixl/worker.py
 vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
 ```
 
-### 8.1 connector.py：薄门面
+### 9.1 connector.py：薄门面
 
 `NixlConnector`继承：
 
@@ -1038,7 +1207,7 @@ def start_load_kv(...):
 2. worker逻辑不依赖scheduler队列。
 3. connector类本身只负责符合vLLM接口。
 
-### 8.2 NIXL如何决定远程prefill命中
+### 9.2 NIXL如何决定远程prefill命中
 
 `NixlConnectorScheduler.get_num_new_matched_tokens()`：
 
@@ -1064,7 +1233,7 @@ return 0, False
 
 所以NIXL的外部命中来源通常不是“缓存系统查到了prefix”，而是上游P/D协议明确告诉decode侧：prefill侧已经算好了这些block，你可以去拉。
 
-### 8.3 update_state_after_alloc：建立远端block到本地block的映射
+### 9.3 update_state_after_alloc：建立远端block到本地block的映射
 
 NIXL scheduler侧在`update_state_after_alloc()`里看`kv_transfer_params`。
 
@@ -1103,7 +1272,7 @@ params["do_remote_prefill"] = False
 
 防止同一请求重复触发远程拉取。
 
-### 8.4 build_connector_meta：把recv/save/send计划交给worker
+### 9.4 build_connector_meta：把recv/save/send计划交给worker
 
 NIXL的`build_connector_meta()`：
 
@@ -1132,7 +1301,7 @@ return meta
 4. `reqs_in_batch`和`reqs_not_processed`用于处理异步调度下请求是否真的进入batch，以及abort场景。
 5. 构造完metadata后，清空scheduler侧暂存集合。
 
-### 8.5 request_finished：prefill侧如何把remote参数交出去
+### 9.5 request_finished：prefill侧如何把remote参数交出去
 
 NIXL的`request_finished()`在P/D里非常关键。
 
@@ -1174,7 +1343,7 @@ return delay_free_blocks, dict(
 
 这就是P/D disaggregation里KV传输参数从prefill侧流向decode侧的地方。
 
-### 8.6 worker.start_load_kv：真正触发非阻塞NIXL传输
+### 9.6 worker.start_load_kv：真正触发非阻塞NIXL传输
 
 `NixlConnectorWorker.start_load_kv()`：
 
@@ -1201,7 +1370,7 @@ for req_id, meta in metadata.reqs_to_recv.items():
 
 后面还会处理`_ready_requests`：握手刚完成的请求也会立即开始read。
 
-### 8.7 worker.get_finished：完成通知、postprocess和失败block
+### 9.7 worker.get_finished：完成通知、postprocess和失败block
 
 NIXL worker的`get_finished()`：
 
@@ -1234,11 +1403,11 @@ get_block_ids_with_load_errors()
 
 返回并清空。scheduler据此fail或recompute。
 
-## 9. SimpleCPUOffloadConnector：本地CPU offload的典型实现
+## 10. SimpleCPUOffloadConnector：本地CPU offload的典型实现
 
 `SimpleCPUOffloadConnector`适合理解offload connector，因为它比NIXL少了网络握手。
 
-### 9.1 初始化：scheduler manager和worker handler分离
+### 10.1 初始化：scheduler manager和worker handler分离
 
 ```python
 if role == KVConnectorRole.SCHEDULER:
@@ -1258,7 +1427,7 @@ cpu_bytes_to_use_per_rank
 
 其中`cpu_bytes_to_use`是server-wide，按world size均分；`cpu_bytes_to_use_per_rank`可以显式覆盖。
 
-### 9.2 get_num_new_matched_tokens：在CPU block pool里查最长命中
+### 10.2 get_num_new_matched_tokens：在CPU block pool里查最长命中
 
 `SimpleCPUOffloadScheduler.get_num_new_matched_tokens()`：
 
@@ -1281,7 +1450,7 @@ return 0, False
 3. `max_hit_len`减1，是因为最后一个token仍要重算用于采样。
 4. 命中后返回`True`，表示异步从CPU搬回GPU。
 
-### 9.3 update_state_after_alloc：生成CPU->GPU block copy计划
+### 10.3 update_state_after_alloc：生成CPU->GPU block copy计划
 
 核心逻辑：
 
@@ -1294,7 +1463,7 @@ return 0, False
 
 这个connector展示了scheduler侧connector最典型的职责：**不搬数据，只记录“从哪些外部block搬到哪些GPU block”。**
 
-### 9.4 build_connector_meta：store和load一起打包
+### 10.4 build_connector_meta：store和load一起打包
 
 `build_connector_meta()`先准备store：
 
@@ -1326,7 +1495,7 @@ SimpleCPUOffloadMetadata(
 
 这里的event id是scheduler和worker之间对齐异步copy完成状态的编号。
 
-### 9.5 worker.get_finished：延迟提交copy以隐藏开销
+### 10.5 worker.get_finished：延迟提交copy以隐藏开销
 
 SimpleCPUOffload worker比较特殊：
 
@@ -1352,7 +1521,7 @@ if metadata.store_gpu_blocks:
 2. store event完成后，写入`_completed_store_events`。
 3. `build_connector_worker_meta()`把完成的store events回传给scheduler。
 
-### 9.6 update_connector_output：scheduler确认store真正完成
+### 10.6 update_connector_output：scheduler确认store真正完成
 
 SimpleCPUOffload scheduler侧处理worker metadata：
 
@@ -1372,11 +1541,11 @@ for event_idx, count in meta.completed_store_events.items():
 
 这说明“worker说copy完成”和“scheduler把block纳入cache索引”是两个阶段。
 
-## 10. 同步load与异步load的行为差异
+## 11. 同步load与异步load的行为差异
 
 `get_num_new_matched_tokens()`第二个返回值决定scheduler路径。
 
-### 10.1 同步load：本轮继续计算
+### 11.1 同步load：本轮继续计算
 
 如果返回：
 
@@ -1393,7 +1562,7 @@ scheduler会：
 
 这种模式适合很快的本地加载，或者connector在`start_load_kv()`里同步完成。
 
-### 10.2 异步load：本轮只发起传输
+### 11.2 异步load：本轮只发起传输
 
 如果返回：
 
@@ -1411,7 +1580,7 @@ scheduler会：
 
 这种模式适合远程KV传输和CPU/GPU异步copy，因为可以和其他请求的计算重叠。
 
-## 11. 自定义connector应该怎么写
+## 12. 自定义connector应该怎么写
 
 最小结构：
 
@@ -1449,7 +1618,7 @@ class MyConnector(KVConnectorBase_V1, SupportsHMA):
 5. 只处理单KV group，在HMA开启时拿错block ids。
 6. 失败传输没有填`invalid_block_ids`，scheduler会把错误KV当作可用KV。
 
-## 12. 一个完整请求例子
+## 13. 一个完整请求例子
 
 假设请求prompt长度是1024 tokens，block size是16。
 
@@ -1500,7 +1669,7 @@ num_new_tokens = 1024 - 768 = 256
 
 如果1024 tokens全部来自外部KV，scheduler会在load完成后把`num_computed_tokens`从1024改成1023，让最后一个token重新计算并产生采样logits。
 
-## 13. 和prefix caching的关系
+## 14. 和prefix caching的关系
 
 KV connector和vLLM本地prefix caching不是同一个东西，但它们在调度里被串起来：
 
@@ -1524,7 +1693,7 @@ self.kv_cache_manager.cache_blocks(request, request.num_computed_tokens)
 2. load失败时，必须避免把坏block加入cache。
 3. full hit仍需重算最后一个token。
 
-## 14. 和CUDA graph的关系
+## 15. 和CUDA graph的关系
 
 KV connector的layer hook是Python逻辑：
 
@@ -1544,7 +1713,7 @@ requires_piecewise_for_cudagraph(extra_config) -> bool
 
 connector如果需要layer-wise Python操作，应该返回`True`。vLLM配置检查里会把FULL CUDA graph改成PIECEWISE模式，让图分段执行，中间保留Python hook机会。
 
-## 15. 实用判断：什么时候用哪类connector
+## 16. 实用判断：什么时候用哪类connector
 
 | 场景 | 更适合的connector方向 | 原因 |
 |---|---|---|
@@ -1561,7 +1730,7 @@ connector如果需要layer-wise Python操作，应该返回`True`。vLLM配置�
 3. 传输失败时希望`fail`还是`recompute`。
 4. FULL CUDA graph是否会绕过connector需要的Python hook。
 
-## 16. 总结
+## 17. 总结
 
 vLLM V1 KV Connector的核心不是“把tensor复制一下”，而是把KV cache传输变成调度器可理解、worker可执行、attention层可同步、失败可恢复的一套协议。
 
