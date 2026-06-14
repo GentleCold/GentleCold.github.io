@@ -73,11 +73,11 @@ Irminsul做的事情不是简单地把SGLang RadixAttention换成另一个cache�
 
 ```mermaid
 flowchart TD
-    A[Agentic prompt assembly] --> B{内容是否重复}
-    B -->|重复但位置不变| C[exact-prefix cache可命中]
-    B -->|重复但位置改变| D[传统prefix cache miss]
-    D --> E[重新prefill相同内容]
-    E --> F[TTFT升高 / prefill能耗浪费 / GPU占用增加]
+    A["Agentic prompt assembly"] --> B{"内容是否重复"}
+    B -->|重复但位置不变| C["exact-prefix cache可命中"]
+    B -->|重复但位置改变| D["传统prefix cache miss"]
+    D --> E["重新prefill相同内容"]
+    E --> F["TTFT升高 / prefill能耗浪费 / GPU占用增加"]
 ```
 
 Irminsul要解决的是第二条路径：内容重复，但位置变了。
@@ -168,19 +168,19 @@ Irminsul不是替代exact-prefix cache，而是在它后面补一个内容寻址
 
 ```mermaid
 flowchart TD
-    A[Incoming prompt tokens T] --> B[Standard RadixCache prefix match]
-    B --> C[Exact-prefix KV output]
-    B --> D[Unmatched tail]
-    D --> E[CDC split into content-defined chunks]
-    E --> F{hash(chunk) hits registry?}
-    F -->|yes| G[Load cached c_KV and k_r_base]
-    G --> H[delta = p_tgt - p_src]
-    H --> I[Rotate k_r by R(delta)]
-    I --> J[Append reused KV]
-    F -->|no| K[Normal prefill chunk]
-    K --> L[Insert hash -> c_KV, k_r_base, p_src]
+    A["Incoming prompt tokens T"] --> B["Standard RadixCache prefix match"]
+    B --> C["Exact-prefix KV output"]
+    B --> D["Unmatched tail"]
+    D --> E["CDC split into content-defined chunks"]
+    E --> F{"Chunk hash hits registry"}
+    F -->|yes| G["Load cached c_KV and k_r_base"]
+    G --> H["Compute position delta"]
+    H --> I["Rotate k_r by delta"]
+    I --> J["Append reused KV"]
+    F -->|no| K["Normal prefill chunk"]
+    K --> L["Insert chunk into registry"]
     L --> J
-    C --> M[Final KV for request]
+    C --> M["Final KV for request"]
     J --> M
 ```
 
@@ -240,12 +240,12 @@ CDC，content-defined chunking，不按绝对offset切块，而是用滚动hash�
 
 ```mermaid
 flowchart LR
-    A[Token stream] --> B[Rolling Gear hash over window]
-    B --> C{low 7 bits == 0?}
+    A["Token stream"] --> B["Rolling Gear hash over window"]
+    B --> C{"Low 7 bits are zero"}
     C -->|no| B
-    C -->|yes| D[Emit chunk boundary]
-    D --> E[xxHash64 fingerprint for emitted chunk]
-    E --> F[Registry lookup]
+    C -->|yes| D["Emit chunk boundary"]
+    D --> E["xxHash64 fingerprint for emitted chunk"]
+    E --> F["Registry lookup"]
 ```
 
 论文还提到一个重要工程细节：如果滚动hash状态被不同prefix污染，同一共享区域仍可能切出不同边界。因此Irminsul默认使用S2策略，也就是prompt assembler在共享区域前后插入64 token的CDC boundary marker，让滚动状态重置到确定状态。
