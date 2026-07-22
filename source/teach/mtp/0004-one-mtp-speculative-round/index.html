@@ -1,0 +1,178 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 04：走完一轮 MTP 投机解码</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+  <script src="../assets/stepper.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/mtp/0003-mtp-and-speed-model/">上一课：Lesson 03：MTP 如何成为 proposer</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+<main>
+  <header>
+    <p class="meta">Lesson 04 · 目标用时 15 分钟</p>
+    <h1>走完一轮 MTP 投机解码</h1>
+    <p class="subtitle">只跟踪一个固定例子：MTP 提出三个 token，target 接受第一个、拒绝第二个并修正，然后系统提交真实前缀。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/0003-mtp-and-speed-model/">上一课</a>
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/reference/0001-speculative-decoding-mtp-reference.html">速查页</a>
+    </nav>
+  </header>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。顺序 MTP 的 q₂ 以已经提出的 y₁ 为条件。" data-wrong-feedback="回想第三课：顺序 MTP 会把前一个候选 token 的 embedding 交给下一个 module。">
+    <strong>先回忆</strong>
+    <p>顺序 MTP 已经提出 <code>y₁=吃</code>。它预测 <code>y₂</code> 时能看到哪个上下文？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">只看原始前缀内容</button>
+      <button data-answer="correct">看前缀和候选 y₁</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>这轮只回答一个问题</h2>
+  <p>当前真实前缀是 <code>我 喜欢</code>。一轮结束后，哪些 token 会成为真实输出，哪些 KV 可以继续使用？不要先算；点击“下一步”跟着状态变化走一遍。</p>
+
+  <section class="tool stepper" data-stepper="">
+    <div class="stepper-toolbar">
+      <span class="stepper-progress" data-stepper-progress="" aria-live="polite"></span>
+      <div class="stepper-actions">
+        <button type="button" data-stepper-reset="">重新开始</button>
+        <button type="button" data-stepper-next="">下一步</button>
+      </div>
+    </div>
+
+    <section class="step-panel" data-stepper-panel="">
+      <p class="meta">起点：只有真实前缀</p>
+      <div class="token-row" aria-label="真实前缀">
+        <span class="token accepted">我</span>
+        <span class="token accepted">喜欢</span>
+      </div>
+      <p>此时 token 状态和 target KV 都只覆盖 <code>我 喜欢</code>。MTP proposer 接下来会提出三个候选。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 1：MTP 生成候选块</p>
+      <div class="token-row" aria-label="MTP 候选块">
+        <span class="token accepted">我</span>
+        <span class="token accepted">喜欢</span>
+        <span class="token proposed">吃 <small>y₁</small></span>
+        <span class="token proposed">苹果 <small>y₂</small></span>
+        <span class="token proposed">。 <small>y₃</small></span>
+      </div>
+      <p>顺序 MTP 使用的候选概率是：</p>
+      <ul>
+        <li><code>q₁(吃)=0.60</code>，条件是 <code>我 喜欢</code>；</li>
+        <li><code>q₂(苹果)=0.50</code>，条件是 <code>我 喜欢 吃</code>；</li>
+        <li><code>q₃(。)=0.70</code>，条件是 <code>我 喜欢 吃 苹果</code>。</li>
+      </ul>
+      <p class="meta">如果 proposer 是并行 heads，后两个 head 不会看到前面的候选；但候选块交给 target 后，下面的验证流程相同。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 2：target 一次评分候选路径</p>
+      <table>
+        <thead><tr><th>位置</th><th>候选</th><th>qᵢ(yᵢ)</th><th>pᵢ(yᵢ)</th><th>接受概率</th><th>随机数 uᵢ</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>吃</td><td>0.60</td><td>0.48</td><td>0.80</td><td>0.30</td></tr>
+          <tr><td>2</td><td>苹果</td><td>0.50</td><td>0.20</td><td>0.40</td><td>0.70</td></tr>
+          <tr><td>3</td><td>。</td><td>0.70</td><td>0.65</td><td>0.93</td><td>尚未使用</td></tr>
+        </tbody>
+      </table>
+      <p>target 可以沿候选路径一次算出这些 <code>pᵢ</code>。但是 sampler 必须从左到右检查，因为第一个拒绝会改变后面位置的条件前缀。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 3：接受第一个候选</p>
+      <div class="token-row" aria-label="第一个候选被接受">
+        <span class="token accepted">我</span>
+        <span class="token accepted">喜欢</span>
+        <span class="token accepted">吃 <small>接受</small></span>
+        <span class="token proposed">苹果</span>
+        <span class="token proposed">。</span>
+      </div>
+      <div class="formula">u₁ = 0.30 &lt; min(1, 0.48 / 0.60) = 0.80</div>
+      <p><code>吃</code> 进入 accepted prefix。现在才能继续检查第二个候选。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 4：拒绝第二个候选并修正</p>
+      <div class="formula">u₂ = 0.70 &gt; min(1, 0.20 / 0.50) = 0.40</div>
+      <p><code>苹果</code> 被拒绝。这个位置的完整分布如下：</p>
+      <table>
+        <thead><tr><th>token</th><th>target p₂</th><th>draft q₂</th><th>缺口 (p₂-q₂)+</th><th>修正分布</th></tr></thead>
+        <tbody>
+          <tr><td>苹果</td><td>0.20</td><td>0.50</td><td>0</td><td>0</td></tr>
+          <tr><td>香蕉</td><td>0.50</td><td>0.20</td><td>0.30</td><td>1</td></tr>
+          <tr><td>梨</td><td>0.30</td><td>0.30</td><td>0</td><td>0</td></tr>
+        </tbody>
+      </table>
+      <p>因此修正 token 必然是 <code>香蕉</code>。拒绝的 <code>苹果</code> 不可能在 residual 中再次被采到。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 5：首拒后，旧后缀全部作废</p>
+      <div class="token-row" aria-label="修正后的真实输出">
+        <span class="token accepted">我</span>
+        <span class="token accepted">喜欢</span>
+        <span class="token accepted">吃</span>
+        <span class="token corrected">香蕉 <small>修正</small></span>
+        <span class="token rejected">苹果</span>
+        <span class="token rejected">。</span>
+      </div>
+      <p><code>y₃=。</code> 原来是根据 <code>我 喜欢 吃 苹果</code> 提出的。现在真实前缀变成了 <code>我 喜欢 吃 香蕉</code>，所以旧的 <code>q₃</code> 和 <code>p₃</code> 都不再对应当前条件，不能继续验证。</p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">终点：分别看 token 状态与 KV 状态</p>
+      <div class="state-ledger">
+        <div>
+          <strong>逻辑 token</strong>
+          <p><code>我 喜欢 吃 香蕉</code></p>
+          <p><code>吃</code> 是 accepted token，<code>香蕉</code> 是 correction token。</p>
+        </div>
+        <div>
+          <strong>可复用 target KV</strong>
+          <p><code>我 喜欢 吃</code></p>
+          <p>verification 已计算并确认了 <code>吃</code> 的 KV；候选 <code>苹果、。</code> 的 KV 必须丢弃。</p>
+        </div>
+      </div>
+      <section class="callout reject">
+        <strong>为什么香蕉的 KV 还没有？</strong>
+        <p><code>香蕉</code> 是从 <code>p₂</code> 的 residual 采出来的，但它没有作为 verification 的输入 token。普通实现要在下一步处理它，或通过专门的融合/重算路径补出它的 KV。</p>
+      </section>
+    </section>
+  </section>
+
+  <h2>把整轮压成四条规则</h2>
+  <ol>
+    <li>MTP 先产生候选块和实际使用的 <code>q₁…qγ</code>。</li>
+    <li>target 沿候选路径一次得到 <code>p₁…pγ+1</code>，sampler 再从左到右验收。</li>
+    <li>首次拒绝时，从该位置的 residual 采 correction，并立即停止本轮验证。</li>
+    <li>逻辑 token 提交 accepted prefix 与 correction；KV 只保留确实对应真实路径的部分。</li>
+  </ol>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。y₃ 的 p₃/q₃ 都建立在包含旧 y₂ 的条件前缀上，首拒后已经失效。" data-wrong-feedback="实际前缀已由 y₂ 变成 correction token；旧 y₃ 对应的是另一条因果路径。">
+    <strong>收尾检查</strong>
+    <p><code>y₂</code> 被拒绝并修正后，是否还能继续验证旧的 <code>y₃</code>？</p>
+    <div class="quiz-options">
+      <button data-answer="correct">不能，旧后缀作废</button>
+      <button data-answer="wrong">可以，旧后缀保留</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <section class="callout">
+    <strong>主阅读</strong>
+    <p>对照 <a href="https://proceedings.mlr.press/v202/leviathan23a/leviathan23a.pdf">Leviathan et al., Section 2.3 的 Algorithm 1</a>，只寻找三件事：draft block、首次拒绝和 extra token。然后回到本页，不看步骤，自己说出“吃、苹果、句号、香蕉”各自的去向。任何一步不确定，都可以继续问我。</p>
+  </section>
+</main>
+
+
+</body></html>

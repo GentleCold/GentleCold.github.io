@@ -49,6 +49,11 @@
           "id": "0003-mtp-and-speed-model",
           "number": 3,
           "title": "Lesson 03：MTP 如何成为 proposer"
+        },
+        {
+          "id": "0004-one-mtp-speculative-round",
+          "number": 4,
+          "title": "Lesson 04：走完一轮 MTP 投机解码"
         }
       ]
     }

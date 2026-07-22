@@ -106,6 +106,28 @@ async function main() {
               throw new Error(`${lessonRoute} quiz click produced no feedback`);
             }
           }
+          const stepper = page.locator("[data-stepper]").first();
+          if (await stepper.count()) {
+            const panels = stepper.locator("[data-stepper-panel]");
+            const panelCount = await panels.count();
+            const progress = stepper.locator("[data-stepper-progress]");
+            const next = stepper.locator("[data-stepper-next]");
+            if (panelCount < 2 || !(await progress.innerText()).includes(`1 / ${panelCount}`)) {
+              throw new Error(`${lessonRoute} stepper did not initialize`);
+            }
+            for (let index = 1; index < panelCount; index += 1) await next.click();
+            if (!(await progress.innerText()).includes(`${panelCount} / ${panelCount}`)) {
+              throw new Error(`${lessonRoute} stepper did not reach its final panel`);
+            }
+            if (!(await next.isDisabled()) || await stepper.locator("[data-stepper-panel]:visible").count() !== 1) {
+              throw new Error(`${lessonRoute} stepper final state is inconsistent`);
+            }
+            const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+            if (overflow) throw new Error(`${lessonRoute} stepper final state overflows viewport ${viewport.width}px`);
+            await page.screenshot({
+              path: path.join(screenshotDir, `${viewport.name}-${lessonRoute.replace(/[^a-z0-9]+/gi, "-")}-stepper-final.png`),
+            });
+          }
         }
         for (const reference of references) await checkRoute(reference);
       }

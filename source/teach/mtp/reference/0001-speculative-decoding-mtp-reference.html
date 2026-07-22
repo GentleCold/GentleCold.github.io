@@ -19,6 +19,7 @@
       <a href="/teach/mtp/0001-draft-verify-contract/">Lesson 01</a>
       <a href="/teach/mtp/0002-exact-speculative-sampling/">Lesson 02</a>
       <a href="/teach/mtp/0003-mtp-and-speed-model/">Lesson 03</a>
+      <a href="/teach/mtp/0004-one-mtp-speculative-round/">Lesson 04</a>
     </nav>
   </header>
 
@@ -91,6 +92,17 @@ return y_1..y_γ + z</code></pre>
     <li>无效候选后缀的 token、KV block、sequence length、RNG 语义是否回收/截断？</li>
     <li>性能计数是否拆开 draft、verify、accept/correct 和 state management？</li>
   </ol>
+
+  <h2>首拒后的状态账本</h2>
+  <table>
+    <thead><tr><th>对象</th><th>保留</th><th>丢弃或延后</th></tr></thead>
+    <tbody>
+      <tr><td>逻辑 token</td><td>原 prefix、accepted draft prefix、correction token</td><td>被拒 token 与旧 draft 后缀</td></tr>
+      <tr><td>候选分布</td><td>首拒位置用于 residual 的 <code>pᵢ/qᵢ</code></td><td>首拒之后、条件前缀已失效的 <code>pⱼ/qⱼ</code></td></tr>
+      <tr><td>target KV</td><td>真实 prefix 与 accepted draft prefix 对应的 KV</td><td>被拒 token 和旧后缀 KV</td></tr>
+      <tr><td>correction KV</td><td>逻辑上已提交 correction token</td><td>通常要在下一步计算其 KV，除非实现有融合或重算路径</td></tr>
+    </tbody>
+  </table>
 
   <h2>术语边界</h2>
   <table>

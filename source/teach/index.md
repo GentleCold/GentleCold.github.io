@@ -14,4 +14,4 @@ permalink: /teach/
 
 建立足够严格的 MTP（Multi-Token Prediction）与投机解码心智模型，以便独立阅读论文，并能沿着 vLLM 等推理框架源码追踪 draft、verify、accept、correct 的完整数据流。
 
-共 3 节课。
+共 4 节课。

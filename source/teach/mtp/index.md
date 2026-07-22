@@ -11,3 +11,4 @@ permalink: /teach/mtp/
 - [Lesson 01：Draft–Verify 的系统契约](/teach/mtp/0001-draft-verify-contract/)
 - [Lesson 02：为什么投机采样严格无偏](/teach/mtp/0002-exact-speculative-sampling/)
 - [Lesson 03：MTP 如何成为 proposer](/teach/mtp/0003-mtp-and-speed-model/)
+- [Lesson 04：走完一轮 MTP 投机解码](/teach/mtp/0004-one-mtp-speculative-round/)
