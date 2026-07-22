@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "courses": [
+    {
+      "course_id": "daser-kv-save-load-path",
+      "title": "DaseR KV Save/Load Path",
+      "source_fingerprint": "44aeb8b13d79c94701c6e064c1a6578fd579d606ca7ca5cf8b3b8cd46912612b",
+      "why": "Understand the current DaseR iouring + prefix-mode KV cache path well enough to debug scheduler decisions, staging transfers, and L1/L2 behavior without guessing from names alone.",
+      "lessons": [
+        {
+          "id": "0001-daser-iouring-prefix-save-load",
+          "number": 1,
+          "title": "DaseR iouring + prefix save/load 路径"
+        }
+      ]
+    }
+  ]
+}

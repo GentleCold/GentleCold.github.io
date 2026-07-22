@@ -1,0 +1,103 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DaseR iouring + prefix save/load 路径</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/daser-kv-save-load-path/">DaseR KV Save/Load Path</a>
+  <span class="teach-publish-spacer"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+<main>
+  <h1>DaseR iouring + prefix save/load 路径</h1>
+  <p class="lede">这节课只抓一件事：在 prefix 模式下，KV bytes 如何在 vLLM KV cache、worker staging、server iouring L1/L2、prefix index 之间移动。</p>
+
+  <p class="note"><strong>先定方向：</strong>save/store 是 <code>KV cache -&gt; staging -&gt; L1 -&gt; L2 -&gt; commit</code>；load/restore 是 <code>L1/L2 -&gt; staging -&gt; KV cache</code>。commit 只发布 metadata，不搬 bytes。</p>
+
+  <figure>
+    <img src="../assets/daser-iouring-prefix-save-load.png" alt="DaseR iouring prefix save and load architecture diagram">
+    <figcaption>iouring + prefix 模式下 save/load 的控制面、staging、L1/L2 和 commit 可见性。</figcaption>
+  </figure>
+
+  <h2>1. Prefix 模式先把 prompt 切成 slot</h2>
+  <p><code>PrefixHashIndex</code> 不是按整段 prompt 一次性复用。它按 vLLM block size 对齐，每个完整 block 生成一个 chained rolling-prefix key：</p>
+  <pre><code>key_0 = seed
+key_1 = H(key_0, tokens[0:block_tokens])
+key_2 = H(key_1, tokens[block_tokens:2*block_tokens])
+...</code></pre>
+  <p>所以 prefix mode 的 save 粒度是 slot。一个 prompt 有 4 个完整 slots，就可能产生 <code>req:store:0</code> 到 <code>req:store:3</code> 这类 synthetic store ids。</p>
+
+  <h2>2. Save: scheduler 只决定“要存哪里”</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Lookup miss / partial hit</h3>
+      <p><code>get_num_new_matched_tokens()</code> 查询 server。miss 时，reuse strategy 建一个 <code>PendingStore</code>，记住目标 token_count、起始 slot 和 rolling key。</p>
+    </div>
+    <div class="card">
+      <h3>Block IDs 到位后分配</h3>
+      <p><code>update_state_after_alloc()</code> 拿到 vLLM KV block IDs。prefix strategy 对每个缺失 slot 调 <code>alloc_chunks()</code>，server 返回 <code>start_slot</code>、<code>file_offset</code>。</p>
+    </div>
+    <div class="card">
+      <h3>只发布已计算 slot</h3>
+      <p><code>build_connector_meta()</code> 只有在 <code>computed_tokens &gt;= required_tokens</code> 时才把 <code>ReqStoreSpec</code> 交给 worker。</p>
+    </div>
+  </div>
+
+  <h2>3. Save: worker 在 request finished 时一次性 snapshot</h2>
+  <p>master 当前代码里，<code>save_kv_layer()</code> 不再逐层提交保存；它基本只确认当前 step 有 store metadata。真正的数据 snapshot 发生在 <code>get_finished()</code> 里，因为那时请求已完成，但 vLLM 还没释放 KV blocks。</p>
+  <div class="flow">
+    <div class="step"><code>wait_for_save()</code> 把 <code>ReqStoreSpec</code> 和待 commit keys 挂到 <code>_pending_finished_saves</code>。</div>
+    <div class="step"><code>get_finished()</code> 看到 finished req 后调用 <code>_submit_finished_save()</code>。</div>
+    <div class="step"><code>build_staging_store_batches()</code> 按 staging byte 上限分批，span 记录 <code>source_offset -&gt; file_offset</code>。</div>
+    <div class="step"><code>_stage_store_batch()</code> 把 vLLM KV cache 的 block KV 复制进 slot-major CUDA staging。</div>
+    <div class="step"><code>_write_cuda_buffer()</code> 等 CUDA event，导出 CUDA IPC handle，把 spans 发给 server <code>transfer_store</code>。</div>
+  </div>
+
+  <h2>4. Save: server iouring 先写 L1，再异步落 L2</h2>
+  <p>IPC server 收到 <code>transfer_store</code> 后先做 stale allocation 过滤：如果 chunk 的 <code>start_slot/num_slots</code> 已经不是当前 allocation，就跳过这个 span。活着的 span 进入 <code>TieredIOUringTransferLayer.store_bytes_grouped()</code>。</p>
+  <div class="flow">
+    <div class="step"><strong>L1:</strong> <code>store_bytes()</code> 从 CUDA IPC buffer slice 复制到 pinned host memory slice，并放进 L1 range cache。这个时刻后，load 可以从 L1 命中。</div>
+    <div class="step"><strong>L2:</strong> 同一个 pinned slice 被挂到 pending L2 buffers，后台 executor 用 <code>L2IoEngine.write()</code> 通过 native io_uring 写 <code>daser.store</code>。</div>
+    <div class="step"><strong>Commit:</strong> worker 等所有 batch futures 完成，收集 server 返回的 stored chunk keys，再调用 <code>commit_chunks()</code>。<code>ServerCore.commit_chunk()</code> 插入 <code>PrefixHashIndex</code>。</div>
+  </div>
+
+  <h2>5. Load: 只读 committed prefix</h2>
+  <p>load 的前提是 chunk 已 commit。<code>PrefixHashIndex.lookup()</code> 从 prompt 开头按 rolling keys 查，遇到第一个 miss 就停。scheduler 把命中的 token window 修剪到本次 vLLM external prefix 能接收的范围，然后发布 <code>ReqLoadSpec</code>。</p>
+  <div class="flow">
+    <div class="step"><code>start_load_kv()</code> 为本 step 的 loads 建 staging read plan。</div>
+    <div class="step">worker 导出 staging CUDA IPC handle，server 执行 <code>transfer_load</code>。</div>
+    <div class="step"><code>TieredIOUringTransferLayer.load_bytes_grouped()</code> 先解析 L1 resident ranges；miss ranges 从 L2 读入 pinned memory 并 promote 回 L1。</div>
+    <div class="step">worker 等 read 完成后，<code>copy_staging_to_kv_cache()</code> 把 slot-major staging 写回 vLLM KV blocks。</div>
+    <div class="step">如果 metadata 带 <code>pos_offset</code> 或量化 scale，load copy 阶段应用 RoPE delta / scale。</div>
+  </div>
+
+  <h2>最容易记错的 3 点</h2>
+  <ul>
+    <li><strong>staging 是传输缓冲，不是 cache tier。</strong>cache tier 是 server 内的 L1 pinned memory 和 L2 <code>daser.store</code>。</li>
+    <li><strong>alloc 不是 commit。</strong><code>alloc_chunks()</code> 只预留 metadata；<code>commit_chunks()</code> 后 prefix lookup 才能命中。</li>
+    <li><strong>save 的 snapshot 不在每层 hook 里完成。</strong>当前 master 把实际 KV -&gt; staging 延迟到 request finished 时。</li>
+  </ul>
+
+  <section class="quiz">
+    <h2>30 秒自测</h2>
+    <p>一个 prefix slot 已经写进 L1，但还没 commit。下一次 prefix lookup 会命中吗？</p>
+    <button onclick="document.getElementById('a1').textContent='不会。lookup 只看 RetrievalIndex，只有 commit_chunk 后才插入。'">不会</button>
+    <button onclick="document.getElementById('a1').textContent='不对。L1 有 bytes 只能服务已知道 file_offset 的 load，不能让 prefix lookup 可见。'">会</button>
+    <div id="a1" class="answer"></div>
+
+    <p>save 路径里 staging 的下一站是什么？</p>
+    <button onclick="document.getElementById('a2').textContent='对。server transfer 先把 bytes 放入 L1 pinned memory，再安排 L2 write。'">L1 pinned memory</button>
+    <button onclick="document.getElementById('a2').textContent='不精确。io_uring L2 write 是异步持久化；L1 先可见。'">L2 daser.store</button>
+    <div id="a2" class="answer"></div>
+  </section>
+
+  <h2>继续复习</h2>
+  <p>速查版在 <a href="../reference/0001-daser-iouring-prefix-save-load.html">DaseR iouring + prefix save/load 速查</a>。主源码入口：<code>daser/connector/scheduler.py</code>、<code>daser/connector/worker.py</code>、<code>daser/transfer/iouring/layer.py</code>。</p>
+</main>
+
+
+</body></html>

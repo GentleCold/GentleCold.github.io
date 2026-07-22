@@ -1,0 +1,80 @@
+:root {
+  --teach-shell-border: #d9d0c2;
+  --teach-shell-bg: rgba(255, 253, 248, 0.96);
+  --teach-shell-text: #13212b;
+  --teach-shell-link: #0a6f84;
+}
+
+.teach-publish-nav {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: min(980px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--teach-shell-border);
+  color: var(--teach-shell-text);
+  font: 0.9rem/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.teach-publish-link {
+  color: var(--teach-shell-link);
+  text-decoration: none;
+}
+
+.teach-publish-link:hover,
+.teach-publish-link:focus-visible {
+  text-decoration: underline;
+}
+
+.teach-publish-separator {
+  color: #718096;
+}
+
+.teach-publish-spacer {
+  flex: 1 1 auto;
+}
+
+.teach-publish-link-disabled {
+  min-width: 1rem;
+}
+
+/* Long source identifiers are common in lessons; allow them to wrap on phones
+   while preserving horizontal scrolling for preformatted code blocks. */
+.teach-publish-nav ~ main code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.teach-publish-nav ~ main pre code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.teach-publish-nav ~ main .step,
+.teach-publish-nav ~ main .card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .teach-publish-nav {
+    width: calc(100% - 1.25rem);
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding-top: max(0.7rem, env(safe-area-inset-top));
+  }
+
+  .teach-publish-spacer {
+    display: none;
+  }
+
+  .teach-publish-previous,
+  .teach-publish-next {
+    max-width: 48%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

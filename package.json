@@ -6,6 +6,9 @@
     "build": "hexo generate",
     "clean": "hexo clean",
     "deploy": "hexo deploy",
+    "teach:publish": "node tools/teach/publish-teach.js",
+    "test:teach": "node --test tools/teach/publish-teach.test.js",
+    "test:teach:e2e": "node tools/teach/test-teach-e2e.js",
     "test": "node scripts/check-mermaid-zoom.js",
     "server": "hexo server"
   },
@@ -30,5 +33,9 @@
     "hexo-theme-fluid": "^1.9.7",
     "hexo-theme-landscape": "^1.0.0",
     "hexo-wordcount": "^6.0.1"
+  },
+  "devDependencies": {
+    "cheerio": "^1.0.0",
+    "playwright": "^1.61.1"
   }
 }
