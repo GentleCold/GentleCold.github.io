@@ -1,0 +1,126 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第三课：上下文、状态、记忆与 RAG</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/agent/0002-agent-runtime-contracts/">上一课：第二课：Agent Runtime 控制什么</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Lesson 0003 · 约 15 分钟</p>
+      <h1 class="compact-title">上下文、状态、记忆与 RAG</h1>
+      <p class="lede">本课训练一个架构判断：每条信息应该保存在哪里，什么时候进入模型，以及什么时候绝不能进入长期记忆。</p>
+    </header>
+
+    <section>
+      <h2>模型看到的不是整个系统</h2>
+      <p>模型每次只看到一个有限的 <strong>context window</strong>。任务数据库、完整聊天记录、代码仓库、历史事故和全部日志都在窗口外。Agent Runtime 需要通过 <strong>Context Builder</strong> 选择与当前决策有关的信息，把它们序列化成本轮上下文。</p>
+      <div class="callout">
+        <strong>状态是系统事实；上下文是为一次模型调用生成的有限视图。</strong>
+        <p>如果 prompt 里写着“退款已完成”，但支付系统仍显示 pending，权威事实仍是支付系统状态。</p>
+      </div>
+      <p>Anthropic 将 context engineering 描述为在有限 token 预算下，选择并维护最有用的信息集合，而不是简单扩写 prompt。<a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">阅读原文</a>。</p>
+    </section>
+
+    <section>
+      <h2>五类存储不要混用</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>任务状态</h3><p>当前任务的权威结构化事实：阶段、预算、审批、已执行 action 和错误。</p></div>
+        <div class="layer" data-tone="teal"><h3>本轮上下文</h3><p>模型此刻能看到的指令、状态投影、证据、历史摘要和工具 schema。</p></div>
+        <div class="layer" data-tone="gold"><h3>短期与长期记忆</h3><p>短期记忆服务同一 thread；长期记忆跨 thread 保存稳定且允许持久化的信息。</p></div>
+        <div class="layer" data-tone="coral"><h3>RAG</h3><p>从大型外部知识源按当前问题检索证据，再把少量相关片段放进上下文。</p></div>
+        <div class="layer" data-tone="blue"><h3>制品存储</h3><p>保存完整日志、trace、文件和查询结果；上下文通常只放摘要与引用。</p></div>
+        <div class="layer" data-tone="teal"><h3>模型参数</h3><p>训练形成的通用能力，不应被当成用户数据、实时事实或可审计记忆。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>PegaFlow 故障 Agent 如何装配上下文</h2>
+      <p>假设 Agent 正在调查一次 KV transfer timeout。系统拥有 50 MB trace、整个代码仓库、运行配置、历史事故和当前用户问题。正确做法不是把它们全部发送给模型。</p>
+      <div class="architecture" aria-label="故障 Agent 上下文装配">
+        <div class="flow-row">
+          <div class="node state"><b>读取状态</b><small>incident id、节点、时间范围、调查阶段和已验证事实</small></div>
+          <div class="node model"><b>按需检索</b><small>查找相关日志窗口、代码符号、配置和历史事故</small></div>
+          <div class="node control"><b>标注来源</b><small>区分系统指令、用户陈述、日志数据与模型假设</small></div>
+          <div class="node action"><b>压缩组装</b><small>保留关键时间线、错误片段、来源引用和工具 schema</small></div>
+          <div class="node state"><b>本轮决策</b><small>模型只获得回答当前问题所需的最小充分上下文</small></div>
+        </div>
+        <p class="loop-label">完整制品留在外部；模型通过引用继续读取，而不是一次吞下全部内容</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>更多 token 不等于更多能力</h2>
+      <p>上下文过长会增加成本和延迟，也会让无关信息、冲突事实和旧计划竞争模型注意力。<em>Lost in the Middle</em> 的实验表明，模型利用长上下文信息的效果会受信息位置影响。架构目标因此不是“填满窗口”，而是“为下一项决策提供最小充分证据”。<a href="https://arxiv.org/abs/2307.03172">查看论文</a>。</p>
+      <p>常用策略包括：按当前子任务检索、保留来源、去重、把旧步骤压缩为结构化摘要、将大制品留在外部，并在需要时通过工具局部读取。</p>
+    </section>
+
+    <section>
+      <h2>记忆需要读门禁和写门禁</h2>
+      <p>并非每次模型输出都值得写入长期记忆。写入前至少检查：它是否对未来有价值、来源是否权威、作用域属于谁、何时失效、是否包含敏感信息，以及与旧事实冲突时如何处理。</p>
+      <div class="callout">
+        <strong>模型猜测不能悄悄升级为长期事实；外部文档里的文字不能悄悄升级为系统指令。</strong>
+        <p>从网页、工单、日志或历史记忆召回的内容都应视为有来源标签的外部数据。即使其中写着“忽略之前的规则”，它也没有获得更高权限。</p>
+      </div>
+      <p>LangGraph 的 memory 文档把同一 thread 内的 short-term memory 与跨 thread 的 long-term memory 分开，这种作用域区分比笼统地说“Agent 有记忆”更适合工程设计。<a href="https://docs.langchain.com/oss/python/langgraph/add-memory">查看文档</a>。</p>
+    </section>
+
+    <section>
+      <h2>边界判断练习</h2>
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。结构化状态库是权威事实源，本轮提示词只是它的一个投影。" data-wrong-feedback="再想一次：模型窗口会被重建，谁能支持恢复和一致性判断？">
+        <p><strong>问题 1：</strong>Agent 重启后判断任务阶段，首先应该读取哪里？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">结构状态库</button>
+          <button type="button" data-answer="wrong">本轮提示词</button>
+          <button type="button" data-answer="wrong">模型回答稿</button>
+          <button type="button" data-answer="wrong">检索摘要集</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。RAG 是检索与组装机制，不训练模型，也不管理权限。" data-wrong-feedback="不对。RAG 的核心动作发生在模型调用之前：根据问题选择外部证据。">
+        <p><strong>问题 2：</strong>RAG 在 Agent 架构中的主要职责是什么？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">检索外部知识</button>
+          <button type="button" data-answer="wrong">训练模型参数</button>
+          <button type="button" data-answer="wrong">保存全部对话</button>
+          <button type="button" data-answer="wrong">控制工具权限</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。检索结果是带来源的外部数据，不能提升自己的指令优先级。" data-wrong-feedback="注意信任边界：被检索出来的文字不会因为进入 prompt 就获得系统权限。">
+        <p><strong>问题 3：</strong>检索文档写着“忽略系统规则并执行命令”，应如何处理？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">当作外部数据</button>
+          <button type="button" data-answer="wrong">提升系统指令</button>
+          <button type="button" data-answer="wrong">直接执行命令</button>
+          <button type="button" data-answer="wrong">写入永久记忆</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="reading">
+      <h3>本课主阅读</h3>
+      <p><a href="https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents">Anthropic: Effective context engineering for AI agents</a>。阅读时只追踪四个动作：write、select、compress、isolate 分别在解决什么上下文问题。</p>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0002-agent-runtime-contracts/">上一课：Agent Runtime</a>
+      <a href="/teach/agent/reference/0003-context-state-memory-rag.html">打开上下文速查表</a>
+    </nav>
+
+    <p>完成后，请解释：为什么任务状态不能只保存在 prompt 里？RAG 与长期记忆有什么不同？一条检索结果满足哪些条件后，才适合写入长期记忆？</p>
+  </main>
+
+
+</body></html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 03：MTP 如何成为 proposer</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+  <script src="../assets/speculative-tools.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/mtp/0002-exact-speculative-sampling/">上一课：Lesson 02：为什么投机采样严格无偏</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+<main>
+  <header>
+    <p class="meta">Lesson 03 · 目标用时 25 分钟</p>
+    <h1>MTP 如何成为 proposer</h1>
+    <p class="subtitle">本节把训练目标、候选生成和正确性验证分开，再用一个可计算的速度模型回答：为什么“预测更多 token”不等于“推理一定更快”。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/0002-exact-speculative-sampling/">上一课</a>
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/reference/0001-speculative-decoding-mtp-reference.html">速查页</a>
+    </nav>
+  </header>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。MTP 负责学会提出未来候选；目标模型验证与 accept/correct 协议才决定最终输出。" data-wrong-feedback="MTP loss 只约束 future-token predictions。回想上一课：最终分布为什么能恢复为 p？">
+    <strong>先预测</strong>
+    <p>一个模型训练时加入 4-token MTP loss。推理时直接一次输出 4 个 head 的 argmax，不做 target verification。它是否自动等价于原模型逐 token 解码？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">是，四个 head 已经保证正确</button>
+      <button data-answer="correct">否，四个 head 仍然需要验证</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>1. 三层概念不要折叠</h2>
+  <div class="three-col">
+    <section class="panel">
+      <h3>MTP objective</h3>
+      <p>训练时让同一位置的表示预测多个未来 token，增加监督密度，并可能促使表示提前规划。</p>
+    </section>
+    <section class="panel">
+      <h3>Proposer / draft</h3>
+      <p>推理时低成本产生一段候选及相应 <code>qᵢ</code>。它可以来自 MTP heads，也可以是独立小模型、EAGLE、n-gram 等。</p>
+    </section>
+    <section class="panel">
+      <h3>Speculative decoder</h3>
+      <p>让 target 一次评分候选，并执行 accept/correct。它保证 greedy 一致性或 stochastic 分布一致性。</p>
+    </section>
+  </div>
+  <section class="callout">
+    <strong>一句话关系</strong>
+    <p>MTP 可以让 proposer 又便宜又接近 target，从而提高接受率；但 MTP 本身不是 speculative decoding，也不负责无偏性证明。</p>
+  </section>
+
+  <h2>2. 通用的并行-head MTP</h2>
+  <p>Gloeckle et al. 的结构用共享 Transformer trunk 产生上下文表示 <code>z≤t</code>，再用 <code>n</code> 个独立输出 head 分别预测 <code>xₜ₊₁ … xₜ₊ₙ</code>：</p>
+  <div class="formula">
+    L<sub>n</sub> = − Σ<sub>t</sub> Σ<sub>i=1..n</sub> log P<sub>θ</sub>(x<sub>t+i</sub> | z<sub>≤t</sub>)
+  </div>
+  <div class="pipeline" aria-label="并行多 token prediction heads">
+    <div class="target-stage"><strong>Shared trunk</strong>读取真实 prefix，生成同一个上下文表示。</div>
+    <div class="draft-stage"><strong>Head +1</strong>预测下一个 token。</div>
+    <div class="draft-stage"><strong>Head +2</strong>从同一 prefix 表示预测第二个未来 token。</div>
+    <div class="draft-stage"><strong>Head +3/+4</strong>继续预测更远位置。</div>
+  </div>
+  <p>这些 future heads 的预测共享已知 prefix，但后面的 head 并没有条件化在前面 head 实际生成的 token 上。因此，单独看各位置都可能很准，拼起来却未必是一条连贯的自回归路径。用于推理时，需要 blockwise verification 或 tree candidates 来筛出有效前缀。</p>
+  <p>该论文把额外 heads 用于 greedy self-speculative decoding：7B、4-token prediction model 在 code 上平均每次 forward 取回 3.50 个 token，报告相对速度 3.05×；这说明 MTP 能形成高质量 proposal，但数值是特定模型、数据和实现的实测结果，不是结构保证。</p>
+
+  <h2>3. DeepSeek-V3 的顺序 MTP modules</h2>
+  <p>DeepSeek-V3 没有采用“所有 future heads 只看同一个 trunk state”的并行结构，而是串接 <code>D</code> 个 MTP modules。第 <code>k</code> 个 module：</p>
+  <ol>
+    <li>取得上一深度的表示 <code>hᵢᵏ⁻¹</code>；</li>
+    <li>拼接第 <code>i+k</code> 个 token 的 embedding；训练时它是真实 token，推理 draft 时对应前一深度产生的 token；</li>
+    <li>经过线性投影和一个 Transformer block，得到 <code>hᵢᵏ</code>；</li>
+    <li>用与主模型共享的 output head 预测再下一个 token。</li>
+  </ol>
+  <div class="formula">
+    h′<sub>i</sub><sup>k</sup> = M<sub>k</sub>[RMSNorm(h<sub>i</sub><sup>k−1</sup>); RMSNorm(Emb(t<sub>i+k</sub>))]
+  </div>
+  <div class="formula">
+    h<sup>k</sup> = TRM<sub>k</sub>(h′<sup>k</sup>),　P<sub>i</sub><sup>k+1</sup> = OutHead(h<sub>i</sub><sup>k</sup>)
+  </div>
+  <p>这保留了完整 causal chain：更深的预测显式接收前一个未来 token，而不是从同一个静态 prefix 独立猜更远的位置。DeepSeek-V3 report 也明确说，MTP 的首要目的仍是改善主模型训练；推理时可以丢弃 modules，也可以把它们改作 speculative decoding。</p>
+
+  <table>
+    <thead><tr><th>维度</th><th>Gloeckle et al. 并行 heads</th><th>DeepSeek-V3 顺序 modules</th></tr></thead>
+    <tbody>
+      <tr><td>未来位置之间</td><td>从共享 trunk state 独立预测</td><td>后一个深度接收前一深度状态与 token embedding</td></tr>
+      <tr><td>额外结构</td><td>每个 future position 有独立 head layers</td><td>每个深度有 projection + Transformer block，共享 embedding/output head</td></tr>
+      <tr><td>训练意图</td><td>提升训练质量，也支持 self-speculation</td><td>主要提升主模型质量，speculation 是可选复用</td></tr>
+      <tr><td>推理正确性</td><td>仍需 base/target verification</td><td>仍需 main/target verification</td></tr>
+    </tbody>
+  </table>
+
+  <h2>4. MTP 接入投机解码的数据流</h2>
+  <pre><code>prefix ── main model ──► target hidden state + p_1
+                           │
+                           └─ MTP module 1 ─► y_1, q_1
+                                  │ Emb(y_1)
+                                  ▼
+                              MTP module 2 ─► y_2, q_2
+                                  │
+                                  ▼
+                              ... y_γ, q_γ
+
+prefix + [y_1 ... y_γ] ── target verification forward ──► p_1 ... p_(γ+1)
+                                                          │
+                                               accept / correct / commit KV</code></pre>
+  <p>有的实现可以复用 main model 已经计算的第一组 logits 或 hidden state，有的会把 proposal 与 verification 调度成不同 worker step。读源码时不要被类名牵着走，只追四类对象：</p>
+  <table>
+    <thead><tr><th>对象</th><th>必须持有的信息</th><th>输出</th></tr></thead>
+    <tbody>
+      <tr><td>Proposer</td><td>prefix state、draft/MTP state、sampling params</td><td><code>y₁…yγ</code> 与实际使用的 <code>q₁…qγ</code></td></tr>
+      <tr><td>Target scorer</td><td>prefix KV、candidate tokens、position/attention metadata</td><td><code>p₁…pγ+1</code> 与候选路径上的临时状态</td></tr>
+      <tr><td>Sampler</td><td>候选 token、对应 <code>pᵢ/qᵢ</code>、随机数</td><td>accepted prefix length 与 correction/bonus token</td></tr>
+      <tr><td>State manager</td><td>accepted length、sequence/block tables</td><td>只提交真实路径的 token 与 KV，回收无效后缀</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. 理论 tokens/iteration</h2>
+  <p>假设每个 draft token 的接受事件独立同分布，平均接受率为 <code>α</code>。第 1 个 token 一定产出；要产出第 2 个，需要第 1 个 draft 被接受；要产出第 <code>k+1</code> 个，需要前 <code>k</code> 个都被接受。因此：</p>
+  <div class="formula">
+    E[tokens / iteration] = 1 + α + α² + … + α<sup>γ</sup> = (1−α<sup>γ+1</sup>)/(1−α)
+  </div>
+  <p>当 <code>α=1</code> 时取极限，等于 <code>γ+1</code>。当 <code>γ→∞</code> 时上界是 <code>1/(1−α)</code>：若 <code>α=0.8</code>，即使无限加长 draft，理想平均产出也只趋近 5。</p>
+
+  <h2>6. 理想速度模型</h2>
+  <p>令一次 target decode step 耗时为 <code>T</code>，一次 draft step 耗时为 <code>cT</code>。理想化假设 target 对 <code>γ+1</code> 个位置的并行验证仍耗时约 <code>T</code>，一轮成本就是 <code>(1+γc)T</code>：</p>
+  <div class="formula">
+    speedup = (1−α<sup>γ+1</sup>) / ((1−α)(1+γc))
+  </div>
+
+  <section class="tool" data-speed-tool="">
+    <div class="controls">
+      <label>平均接受率 α = <span data-alpha-label=""></span><input data-alpha="" type="range" min="0" max="1" step="0.01" value="0.80"></label>
+      <label>draft 长度 γ = <span data-gamma-label=""></span><input data-gamma="" type="range" min="1" max="16" step="1" value="5"></label>
+      <label>draft/target 成本比 c = <span data-cost-label=""></span><input data-cost="" type="range" min="0" max="0.5" step="0.01" value="0.05"></label>
+    </div>
+    <div class="metric-row">
+      <div class="metric">期望 token/轮<output data-expected=""></output></div>
+      <div class="metric">理想加速比<output data-speedup=""></output></div>
+      <div class="metric">候选槽位利用率<output data-efficiency=""></output></div>
+    </div>
+    <div class="bar-chart">
+      <div class="bar-row"><span>Speedup</span><div class="bar-track"><div class="bar" data-speed-bar=""></div></div><span>上限 5x</span></div>
+    </div>
+    <p class="meta">练习：固定 <code>α=0.6,c=0.1</code>，逐步增加 <code>γ</code>。你会看到更长的 draft 很快停止带来收益，随后因 draft 成本继续累积而变慢。</p>
+  </section>
+
+  <h2>7. 现实中为什么低于公式</h2>
+  <p>把 target verification 相对单 token decode 的成本记为 <code>v(γ,B,L)</code>，再加入调度、采样和状态管理开销 <code>o</code>，更诚实的估算是：</p>
+  <div class="formula">
+    practical speedup ≈ E[tokens/iteration] / (v(γ,B,L) + γc + o)
+  </div>
+  <table>
+    <thead><tr><th>变量</th><th>为什么会恶化</th><th>你应测什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>v</code></td><td>候选越长，attention、activation、logits 和 kernel 工作量越大；大 batch 时 target 本来就 compute-bound</td><td>verify forward latency / baseline decode latency</td></tr>
+      <tr><td><code>c</code></td><td>独立 draft model 太大、跨设备通信，或 MTP modules 太深</td><td>每 proposal token 的端到端成本，不只看参数量</td></tr>
+      <tr><td><code>α</code></td><td>高温度、开放域难 token、draft/target tokenizer 或 sampling processor 不一致</td><td>按位置的 acceptance curve，而不只看整体平均值</td></tr>
+      <tr><td><code>o</code></td><td>动态 batch 重排、概率张量搬运、rejection sampling、KV truncate/recompute</td><td>非模型 kernel、CPU 调度和同步时间</td></tr>
+    </tbody>
+  </table>
+
+  <section class="callout reject">
+    <strong>吞吐与延迟不是同一结论</strong>
+    <p>投机解码最自然地改善低 batch、memory-bound decode 的单请求延迟。高并发时，baseline 已能用 batch 填满 GPU；额外 draft 与 verification FLOPs 可能降低总吞吐。任何“x 倍加速”都必须同时给出 batch、序列长度、采样参数、硬件和指标定义。</p>
+  </section>
+
+  <h2>8. 读论文与源码时的判断顺序</h2>
+  <ol>
+    <li><strong>q 从哪里来？</strong> 独立模型、并行 heads、顺序 modules、隐藏层退出，还是检索/n-gram？</li>
+    <li><strong>候选是否构成真实 causal chain？</strong> 若不是，是否用 tree attention 或 blockwise verification？</li>
+    <li><strong>验证保存什么语义？</strong> greedy 完全一致，还是 stochastic 分布严格一致，或只是近似阈值？</li>
+    <li><strong>qᵢ 是否真的是产生 yᵢ 时的分布？</strong> sampling processor、temperature 和概率张量是否对应？</li>
+    <li><strong>首拒后的状态如何处理？</strong> token、position、KV block 和 RNG 状态是否只提交有效前缀？</li>
+    <li><strong>速度报告由谁贡献？</strong> 接受率、draft 成本、verify 成本还是 batching 策略？</li>
+  </ol>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。高 α 只提高每轮产出；若 γc、verify inflation 或调度开销过大，分母仍会吃掉收益。" data-wrong-feedback="把速度公式的分子和分母同时看：接受率只控制分子中的有效进展。">
+    <strong>收尾检索</strong>
+    <p>一个 MTP proposer 的 token acceptance 达到 90%，是否足以断言系统一定加速？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">足够，90% 已经代表一定加速</button>
+      <button data-answer="correct">不足，还要测总开销才知加速</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>本节压缩</h2>
+  <ul>
+    <li>MTP 是训练目标/候选结构；speculative decoder 才执行 target verification 与分布修正。</li>
+    <li>通用 MTP heads 可从同一 prefix 并行预测多个未来位置；DeepSeek-V3 用顺序 modules 保留 token 间因果链。</li>
+    <li>理想每轮 token 数是 <code>Σₖ₌₀ᵞ αᵏ</code>，收益随 draft 长度递减。</li>
+    <li>真实速度由 acceptance、draft cost、verification inflation、batching 和状态管理共同决定。</li>
+  </ul>
+
+  <section class="callout">
+    <strong>主阅读</strong>
+    <p>先读 <a href="https://arxiv.org/abs/2404.19737">Gloeckle et al., Section 2 与 3.2</a>，再读 <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report, Section 2.2</a>，逐项对照“并行 heads”和“顺序 modules”。之后只看本页的六步源码检查表，尝试解释一个你熟悉的 vLLM speculative backend；不确定的映射可以继续问我。</p>
+  </section>
+</main>
+
+
+</body></html>

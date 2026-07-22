@@ -1,0 +1,131 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第一课：读懂 Agent 的完整架构</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+  <span class="teach-publish-spacer"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <a class="teach-publish-link teach-publish-next" href="/teach/agent/0002-agent-runtime-contracts/">下一课：第二课：Agent Runtime 控制什么</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Lesson 0001 · 约 12 分钟</p>
+      <h1>读懂 Agent 的完整架构</h1>
+      <p class="lede">本课只有一个目标：看到任何 Agent 框架时，你都能把它还原为同一条“决策—行动—观察”闭环，并知道外围系统为什么存在。</p>
+    </header>
+
+    <section>
+      <h2>先排除一个误解</h2>
+      <p>普通 LLM 调用是函数映射：输入文本，得到输出文本。Agent 则让模型参与控制流：它可以根据目标和当前状态选择工具、观察结果、修正下一步，并在满足条件时停止。</p>
+      <div class="callout">
+        <strong>决定 Agent 性质的不是“有没有工具”，而是“谁决定下一步”。</strong>
+        <p>固定执行“检索 → 总结 → 发邮件”是 workflow。模型观察检索结果后自主决定继续查证、请求澄清或起草邮件，才出现 agentic control。</p>
+      </div>
+      <p>Anthropic 将这两类系统分别称为 workflows 和 agents，并建议从最简单、最可控的方案开始，只在任务确实需要动态决策时增加自主性。<a href="https://www.anthropic.com/engineering/building-effective-agents">阅读原文</a>。</p>
+    </section>
+
+    <section>
+      <h2>一条循环解释 Agent</h2>
+      <div class="architecture" aria-label="Agent 执行闭环">
+        <div class="flow-row">
+          <div class="node state"><b>上下文</b><small>目标、指令、状态、记忆、工具、预算</small></div>
+          <div class="node model"><b>模型</b><small>基于上下文选择下一步动作</small></div>
+          <div class="node control"><b>门禁</b><small>校验权限、风险、参数和预算</small></div>
+          <div class="node action"><b>工具</b><small>对外部世界执行读写动作</small></div>
+          <div class="node state"><b>观察</b><small>把结果或错误写回当前状态</small></div>
+        </div>
+        <p class="loop-label">没有完成：观察 → 新上下文 → 再决策；完成或触及限制：停止</p>
+      </div>
+      <p>ReAct 论文把 reasoning 与 acting 交错起来，是这类循环的重要研究来源。工程系统不一定暴露模型的内部推理，但仍会保留“动作—环境反馈—下一轮决策”的外部闭环。<a href="https://arxiv.org/abs/2210.03629">查看论文</a>。</p>
+    </section>
+
+    <section>
+      <h2>外围八层各管什么</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>交互层</h3><p>接收用户、事件或 API 输入，管理身份、会话和结果展示。</p></div>
+        <div class="layer" data-tone="gold"><h3>编排层</h3><p>运行循环，处理路由、暂停、恢复、重试、超时、handoff。</p></div>
+        <div class="layer" data-tone="teal"><h3>模型层</h3><p>负责语义理解和动态决策，不直接获得无限权限。</p></div>
+        <div class="layer" data-tone="coral"><h3>工具层</h3><p>通过函数、API、MCP 或沙箱读取和改变外部世界。</p></div>
+        <div class="layer" data-tone="blue"><h3>状态与记忆层</h3><p>保存当前任务事实、检查点、会话历史和可检索的长期知识。</p></div>
+        <div class="layer" data-tone="gold"><h3>安全与治理层</h3><p>限制输入、输出与动作，执行最小权限、审批、审计和数据策略。</p></div>
+        <div class="layer" data-tone="teal"><h3>观测与评测层</h3><p>记录 trace、成本、延迟和真实任务结果，持续发现回归。</p></div>
+        <div class="layer" data-tone="coral"><h3>运行基础设施层</h3><p>提供队列、持久执行、隔离、密钥、并发控制和伸缩。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>把热门词放回正确位置</h2>
+      <p><strong>RAG</strong> 给“上下文”补充知识；<strong>memory</strong> 跨步骤或会话保存并召回状态；<strong>MCP</strong> 标准化 Agent host 如何连接工具与资源；它们都不是完整的 Agent。</p>
+      <p><strong>多 Agent</strong> 也没有新魔法。它只是把一个大循环拆成多个有角色、权限和上下文边界的决策单元，再用 router、supervisor、handoff 或共享状态连接起来。每多一个 Agent，就多一组协议、失败模式、成本和评测责任。</p>
+      <p><strong>框架</strong> 是这些抽象的不同落地：OpenAI Agents SDK 强调 agent、tool、handoff、guardrail、session 和 tracing；LangGraph 用 state、node、edge 和 checkpoint 显式表达控制流。理解总图后，框架只是名词映射。</p>
+    </section>
+
+    <section>
+      <h2>生产级架构的关键反转</h2>
+      <p>原型关注“模型能不能做”；生产系统关注“系统如何知道它做对了，以及做错时能否控制影响”。所以真正的核心不是 prompt，而是以下四个闭环：</p>
+      <ol>
+        <li><strong>执行闭环：</strong>决策、动作、观察、终止。</li>
+        <li><strong>状态闭环：</strong>事实来源、检查点、恢复、幂等。</li>
+        <li><strong>安全闭环：</strong>最小权限、审批、隔离、审计。</li>
+        <li><strong>改进闭环：</strong>trace、结果判定、评测集、回归修复。</li>
+      </ol>
+      <p>一个可靠的 Agent 通常是“确定性外壳包住概率性决策”：代码负责边界和不变量，模型只在语义不确定、路径不可预先穷举的地方做选择。</p>
+    </section>
+
+    <section>
+      <h2>检索练习</h2>
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。模型参与动态控制流，这是 Agent 与固定 workflow 的核心区别。" data-wrong-feedback="再看一次：工具、记忆和评测都支撑系统，但动态选择下一步的是模型。">
+        <p><strong>问题 1：</strong>在 Agent loop 中，哪个模块根据当前状态动态决定下一步？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">模型模块</button>
+          <button type="button" data-answer="wrong">工具模块</button>
+          <button type="button" data-answer="wrong">记忆模块</button>
+          <button type="button" data-answer="wrong">评测模块</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。MCP 解决连接与互操作，不负责决定何时调用哪个工具。" data-wrong-feedback="不对。MCP 位于工具连接边界，不替代 Agent 的决策和编排循环。">
+        <p><strong>问题 2：</strong>MCP 在完整架构中的主要角色是什么？</p>
+        <div class="answers">
+          <button type="button" data-answer="wrong">模型模块</button>
+          <button type="button" data-answer="correct">连接协议</button>
+          <button type="button" data-answer="wrong">记忆系统</button>
+          <button type="button" data-answer="wrong">评测系统</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。代码守住边界和不变量，模型只处理需要语义判断的部分。" data-wrong-feedback="再想想生产可靠性：概率性模型不适合独自承担权限、预算与不变量。">
+        <p><strong>问题 3：</strong>生产级 Agent 最稳健的控制结构通常是哪一种？</p>
+        <div class="answers">
+          <button type="button" data-answer="wrong">全权自主</button>
+          <button type="button" data-answer="wrong">固定回复</button>
+          <button type="button" data-answer="correct">代码包围</button>
+          <button type="button" data-answer="wrong">无限循环</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="reading">
+      <h3>本课主阅读</h3>
+      <p><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building Effective Agents</a>。阅读时只回答两个问题：文中如何区分 workflow 与 agent？什么时候不应该增加自主性？不需要记框架名。</p>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0002-agent-runtime-contracts/">下一课：Agent Runtime</a>
+      <a href="/teach/agent/reference/0001-agent-architecture-reference.html">打开架构速查表</a>
+    </nav>
+
+    <p>完成后请直接告诉我三道题的答案，或者指出总图中最不清楚的一层。我会根据你的回答纠正误区并设计下一课。</p>
+  </main>
+
+
+</body></html>

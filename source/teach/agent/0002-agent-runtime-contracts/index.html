@@ -1,0 +1,129 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第二课：Agent Runtime 控制什么</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/agent/0001-agent-architecture-map/">上一课：第一课：读懂 Agent 的完整架构</a>
+  <a class="teach-publish-link teach-publish-next" href="/teach/agent/0003-context-state-memory-rag/">下一课：第三课：上下文、状态、记忆与 RAG</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Lesson 0002 · 约 15 分钟</p>
+      <h1 class="compact-title">Agent Runtime 控制什么</h1>
+      <p class="lede">本课把“模型不可靠”变成可以实现和评审的系统合同。完成后，你应该能为模型、Runtime、策略和工具划清责任。</p>
+    </header>
+
+    <section>
+      <h2>模型不是 Agent 进程</h2>
+      <p>模型调用是一次无状态计算：接收当前上下文，返回文本或结构化动作。真正让 Agent 持续运行的是 <strong>Agent Runtime</strong>：它维护任务状态、调用模型、校验动作、执行工具、写入观察，并决定继续、暂停还是停止。</p>
+      <div class="callout">
+        <strong>模型提出下一步；Runtime 决定这一步是否允许、如何执行，以及执行后系统处于什么状态。</strong>
+      </div>
+      <p>OpenAI Agents SDK 的 run loop 会反复调用模型、处理 tool call 或 handoff，并受 turn limit 等运行配置约束。这些都是 Runtime 责任，而不是模型能力。<a href="https://openai.github.io/openai-agents-python/running_agents/">查看运行生命周期</a>。</p>
+    </section>
+
+    <section>
+      <h2>用退款 Agent 看清边界</h2>
+      <p>用户说：“把订单 A123 的 1,280 元退给我。”一个合理的系统不会把这句话直接变成支付接口调用。</p>
+      <div class="architecture" aria-label="退款 Agent 执行路径">
+        <div class="flow-row">
+          <div class="node state"><b>读取事实</b><small>Runtime 从订单系统读取金额、状态和用户身份</small></div>
+          <div class="node model"><b>提出动作</b><small>模型建议退款，并给出原因与所需参数</small></div>
+          <div class="node control"><b>策略门禁</b><small>超过 1,000 元，Runtime 将任务暂停等待审批</small></div>
+          <div class="node action"><b>幂等执行</b><small>审批后用稳定 action id 调用退款工具</small></div>
+          <div class="node state"><b>确认结果</b><small>根据支付凭证更新状态，而非相信模型描述</small></div>
+        </div>
+        <p class="loop-label">模型负责语义判断；Runtime、策略和工具共同控制真实副作用</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>“不可靠”具体指什么</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="teal"><h3>非确定性</h3><p>相同输入可能产生不同动作。对策是有限 action schema、参数校验和 turn budget，而不是期待 prompt 永远生效。</p></div>
+        <div class="layer" data-tone="coral"><h3>输入不可信</h3><p>网页、邮件和工具结果可能包含 prompt injection。对策是把数据与权限分离，并在执行侧重新授权。</p></div>
+        <div class="layer" data-tone="gold"><h3>没有事务语义</h3><p>模型不知道超时的退款是否已经发生。对策是 action id、幂等 API、状态查询、对账与补偿。</p></div>
+        <div class="layer" data-tone="blue"><h3>自报成功无效</h3><p>模型说“已完成”不是证据。成功必须由支付凭证、数据库状态或其他外部判定器确认。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Runtime 的六个合同</h2>
+      <ol>
+        <li><strong>事实源：</strong>结构化任务状态在 Runtime 中；prompt 只是为本轮构造的视图。</li>
+        <li><strong>动作：</strong>模型只能提出有限、带类型、可校验的 action proposal。</li>
+        <li><strong>策略：</strong>权限、风险、预算和审批在动作执行前强制检查。</li>
+        <li><strong>副作用：</strong>写操作必须幂等，或具有补偿、确认和人工恢复路径。</li>
+        <li><strong>生命周期：</strong>明确 done、failed、paused、cancelled、timeout 和 turn limit。</li>
+        <li><strong>恢复：</strong>在关键边界保存检查点，重启后不能重复已经成功的动作。</li>
+      </ol>
+      <p>LangGraph 的 durable execution 文档把持久化、恢复、确定性重放和副作用封装放在同一问题下；AWS 关于幂等 API 的文章则解释了为什么重试必须携带稳定的请求标识。<a href="https://docs.langchain.com/oss/python/langgraph/durable-execution">阅读持久执行</a>，<a href="https://aws.amazon.com/cn/builders-library/making-retries-safe-with-idempotent-APIs/">阅读幂等重试</a>。</p>
+    </section>
+
+    <section>
+      <h2>失败时，先分类再处理</h2>
+      <p>模型选错工具是<strong>语义失败</strong>，可以通过上下文、提示、模型或评测改进；网络超时是<strong>操作失败</strong>，应该由 Runtime 有界重试；“超时但可能已经退款”是<strong>未知结果</strong>，绝不能直接重试，必须先按 action id 查询或对账。</p>
+      <div class="callout">
+        <strong>重试只解决瞬时失败。未知结果下盲目重试，可能把一次故障变成两次扣款。</strong>
+      </div>
+    </section>
+
+    <section>
+      <h2>责任归属练习</h2>
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。金额阈值属于可审计的策略，不应依赖模型临场判断。" data-wrong-feedback="再想一次：谁必须稳定、可审计地执行 1,000 元阈值？">
+        <p><strong>问题 1：</strong>谁决定 1,280 元退款必须经过人工审批？</p>
+        <div class="answers">
+          <button type="button" data-answer="wrong">模型逻辑</button>
+          <button type="button" data-answer="correct">策略引擎</button>
+          <button type="button" data-answer="wrong">工具接口</button>
+          <button type="button" data-answer="wrong">记忆系统</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。Runtime 为逻辑动作分配稳定标识，工具据此去重。" data-wrong-feedback="不对。模型输出可能变化，稳定 action id 必须来自确定性的运行系统。">
+        <p><strong>问题 2：</strong>谁为退款动作生成可重试的稳定 action id？</p>
+        <div class="answers">
+          <button type="button" data-answer="wrong">模型输出</button>
+          <button type="button" data-answer="wrong">工具协议</button>
+          <button type="button" data-answer="wrong">会话记忆</button>
+          <button type="button" data-answer="correct">运行系统</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。模型擅长开放式语义判断，其他三项必须由确定性系统保证。" data-wrong-feedback="再看责任边界：权限、真实扣款和审计都不能只靠概率性输出。">
+        <p><strong>问题 3：</strong>下面哪项最适合交给模型负责？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">语义决策</button>
+          <button type="button" data-answer="wrong">权限授予</button>
+          <button type="button" data-answer="wrong">金额扣款</button>
+          <button type="button" data-answer="wrong">审计留痕</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="reading">
+      <h3>本课主阅读</h3>
+      <p><a href="https://openai.github.io/openai-agents-python/running_agents/">OpenAI Agents SDK: Running agents</a>。阅读时找出 run loop 的停止、handoff、tool call 和 turn limit 分别由谁控制。</p>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0001-agent-architecture-map/">上一课：完整架构</a>
+      <a href="/teach/agent/0003-context-state-memory-rag/">下一课：上下文与记忆</a>
+      <a href="/teach/agent/reference/0002-agent-runtime-contracts.html">打开 Runtime 速查表</a>
+    </nav>
+
+    <p>完成后，请不用“模型不可靠”这句概括，直接说明：退款 Agent 为什么需要 action id、策略门禁和外部成功凭证。也可以把你熟悉的一个 Agent 场景代入这六个 Runtime 合同。</p>
+  </main>
+
+
+</body></html>

@@ -55,9 +55,10 @@ async function main() {
   const server = await startServer();
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
-  const browser = await chromium.launch({ headless: true });
+  let browser;
   const screenshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "teach-blog-e2e-"));
   try {
+    browser = await chromium.launch({ headless: true });
     for (const viewport of [
       { name: "phone", width: 390, height: 844 },
       { name: "desktop", width: 1280, height: 900 },
@@ -96,10 +97,12 @@ async function main() {
             const url = new URL(href);
             if (url.origin === baseUrl) references.add(url.pathname);
           }
-          const quizButton = page.locator(".quiz button").first();
+          const quiz = page.locator("[data-quiz], .quiz").first();
+          const quizButton = quiz.locator("button").first();
           if (await quizButton.count()) {
             await quizButton.click();
-            if (!(await page.locator(".quiz .answer").first().innerText()).trim()) {
+            const feedback = quiz.locator("[data-feedback], .answer").first();
+            if (!(await feedback.count()) || !(await feedback.innerText()).trim()) {
               throw new Error(`${lessonRoute} quiz click produced no feedback`);
             }
           }
@@ -110,7 +113,7 @@ async function main() {
       await context.close();
     }
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
   console.log(`Teach e2e validation passed; screenshots: ${screenshotDir}`);

@@ -1,0 +1,171 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 02：为什么投机采样严格无偏</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+  <script src="../assets/speculative-tools.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/mtp/0001-draft-verify-contract/">上一课：Lesson 01：Draft–Verify 的系统契约</a>
+  <a class="teach-publish-link teach-publish-next" href="/teach/mtp/0003-mtp-and-speed-model/">下一课：Lesson 03：MTP 如何成为 proposer</a>
+</nav>
+<main>
+  <header>
+    <p class="meta">Lesson 02 · 目标用时 25 分钟</p>
+    <h1>为什么投机采样严格无偏</h1>
+    <p class="subtitle">本节把“目标分布不变”从一句口号还原成概率质量守恒。全文固定用 <code>p = target</code>、<code>q = draft</code>。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/0001-draft-verify-contract/">上一课</a>
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/0003-mtp-and-speed-model/">下一课：MTP 与速度</a>
+      <a href="/teach/mtp/reference/0001-speculative-decoding-mtp-reference.html">速查页</a>
+    </nav>
+  </header>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。对 draft 过度提出的 token 必须降低接受率；对 draft 提出不足的 token，缺失概率要在拒绝路径补回。" data-wrong-feedback="如果所有 draft 都接受，最终分布就是 q；除非 p=q，否则不可能仍服从 p。">
+    <strong>先预测</strong>
+    <p>若 draft 采到 token <code>x</code>，目标认为 <code>p(x)=0.2</code>，draft 认为 <code>q(x)=0.5</code>。能否总是接受它，同时保持最终分布为 <code>p</code>？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">能，直接接受该 token</button>
+      <button data-answer="correct">否，按比例接受该 token</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>1. 先只看一个位置</h2>
+  <p>在固定前缀下，目标模型给出分布 <code>p(x)</code>，draft 给出分布 <code>q(x)</code>。我们先从 <code>q</code> 采一个候选 <code>x</code>，再以如下概率接受：</p>
+  <div class="formula">
+    a(x) = min(1, p(x) / q(x))
+  </div>
+  <p>若 <code>q(x) ≤ p(x)</code>，draft 没有过度提出这个 token，候选总被接受。若 <code>q(x) &gt; p(x)</code>，只接受其中 <code>p(x)/q(x)</code> 的比例。于是 token <code>x</code> 经由“draft 且被接受”这条路径得到的概率质量恰好是：</p>
+  <div class="formula">
+    q(x) · min(1, p(x)/q(x)) = min(p(x), q(x))
+  </div>
+  <p>这一步保留了 <code>p</code> 与 <code>q</code> 的重叠部分。总接受概率记为 <code>β</code>：</p>
+  <div class="formula">
+    β = Σₓ min(p(x),q(x)) = 1 − TV(p,q)
+  </div>
+  <p>其中 <code>TV(p,q)=½Σₓ|p(x)-q(x)|</code> 是 total variation distance。draft 与 target 越接近，重叠越大，接受概率越高。</p>
+
+  <h2>2. 拒绝后缺的到底是哪部分</h2>
+  <p>接受路径已经给 token <code>x</code> 分配了 <code>min(p(x),q(x))</code>。要让最终质量达到 <code>p(x)</code>，拒绝路径只能补：</p>
+  <div class="formula">
+    p(x) − min(p(x),q(x)) = max(p(x) − q(x), 0)
+  </div>
+  <p>所有 token 的缺口总和为 <code>1-β</code>，恰好等于拒绝事件的概率。因此拒绝后从如下修正分布采样：</p>
+  <div class="formula">
+    p′(x) = norm((p(x)−q(x))<sub>+</sub>) = max(p(x)−q(x),0) / (1−β)
+  </div>
+
+  <section class="callout reject">
+    <strong>最常见的错误</strong>
+    <p>拒绝后不能直接从原始 <code>p</code> 重采。接受路径已经占用了两分布的重叠质量；再从完整 <code>p</code> 采，会把重叠部分重复计数。residual distribution 只补 draft 相对 target 欠缺的部分。</p>
+  </section>
+
+  <h2>3. 用三个 token 手算</h2>
+  <table>
+    <thead>
+      <tr><th>token</th><th>target p</th><th>draft q</th><th>接受率 min(1,p/q)</th><th>接受路径质量 min(p,q)</th><th>未归一化缺口 (p−q)+</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>A</td><td>0.50</td><td>0.60</td><td>5/6</td><td>0.50</td><td>0.00</td></tr>
+      <tr><td>B</td><td>0.30</td><td>0.10</td><td>1</td><td>0.10</td><td>0.20</td></tr>
+      <tr><td>C</td><td>0.20</td><td>0.30</td><td>2/3</td><td>0.20</td><td>0.00</td></tr>
+    </tbody>
+  </table>
+  <p><code>β = 0.50+0.10+0.20 = 0.80</code>，所以拒绝概率是 <code>0.20</code>。所有缺口都在 B 上，归一化后的 <code>p′(B)=1</code>。最终概率：</p>
+  <div class="formula">
+    accepted [0.50,0.10,0.20] + rejected-and-corrected [0,0.20,0] = [0.50,0.30,0.20] = p
+  </div>
+
+  <h2>4. 自己改分布</h2>
+  <section class="tool" data-residual-tool="">
+    <p>修改下表中的 <code>p</code>/<code>q</code>，每列必须合计为 1。观察接受率、residual 和最终质量。</p>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>token</th><th>p</th><th>q</th><th>候选被接受概率</th><th>拒绝后的 p′</th><th>最终概率</th></tr></thead>
+        <tbody>
+          <tr data-token-row=""><td>A</td><td><input data-p="" type="number" min="0" max="1" step="0.05" value="0.50" aria-label="A target probability"></td><td><input data-q="" type="number" min="0" max="1" step="0.05" value="0.60" aria-label="A draft probability"></td><td data-acceptance=""></td><td data-residual=""></td><td data-final=""></td></tr>
+          <tr data-token-row=""><td>B</td><td><input data-p="" type="number" min="0" max="1" step="0.05" value="0.30" aria-label="B target probability"></td><td><input data-q="" type="number" min="0" max="1" step="0.05" value="0.10" aria-label="B draft probability"></td><td data-acceptance=""></td><td data-residual=""></td><td data-final=""></td></tr>
+          <tr data-token-row=""><td>C</td><td><input data-p="" type="number" min="0" max="1" step="0.05" value="0.20" aria-label="C target probability"></td><td><input data-q="" type="number" min="0" max="1" step="0.05" value="0.30" aria-label="C draft probability"></td><td data-acceptance=""></td><td data-residual=""></td><td data-final=""></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="metric-row">
+      <div class="metric">总接受率 β<output data-beta=""></output></div>
+      <div class="metric">TV / 拒绝率<output data-tv=""></output></div>
+      <div class="metric">校验状态<p data-status="" aria-live="polite"></p></div>
+    </div>
+  </section>
+
+  <h2>5. 一行证明必须会重建</h2>
+  <p>对任意 token <code>x₀</code>，最终得到它的事件只有两条互斥路径：</p>
+  <div class="formula">
+    P(X=x₀) = min(p(x₀),q(x₀)) + (1−β) · p′(x₀)
+  </div>
+  <p>代入 <code>p′</code>：</p>
+  <div class="formula">
+    P(X=x₀) = min(p,q) + p − min(p,q) = p(x₀)
+  </div>
+  <p>这就是分布保持的全部核心。它对 <code>q</code> 的质量没有要求：draft 可以很差，正确性仍成立；差的 <code>q</code> 只会降低接受率并拖慢系统。</p>
+
+  <h2>6. 从一个位置扩展到 γ 个位置</h2>
+  <p>draft 先自回归产生 <code>y₁…yγ</code>，同时保存每个位置真正用于采样的 <code>qᵢ</code>。目标模型沿同一候选前缀一次得到 <code>p₁…pγ+1</code>。然后从左到右：</p>
+  <pre><code>accepted = 0
+for i in 1..γ:
+    r ~ Uniform(0, 1)
+    if r &lt; min(1, p_i(y_i) / q_i(y_i)):
+        accept y_i
+        accepted += 1
+    else:
+        z ~ norm(max(p_i - q_i, 0))
+        emit accepted prefix + z
+        stop this iteration
+
+if accepted == γ:
+    z ~ p_(γ+1)
+    emit y_1..y_γ + z</code></pre>
+  <p>单位置证明可在每个仍然有效的条件前缀下重复应用，所以整个输出序列与直接从 target <code>p</code> 自回归采样具有相同分布。首拒后停止，是因为后续 <code>pᵢ/qᵢ</code> 的条件前缀已经改变。</p>
+
+  <h2>7. sampling processor 放在哪里</h2>
+  <p>temperature、top-k、top-p、min-p 等策略先把 raw logits 变换并归一化为实际采样分布，然后接受公式才作用于这些分布。若 target 与 draft 使用的处理规则不同，也要保留各自实际的 <code>p</code> 与 <code>q</code>；不能拿未处理 logits 或只比较 argmax 来替代概率比。</p>
+  <table>
+    <thead><tr><th>模式</th><th>验证含义</th><th>正确性目标</th></tr></thead>
+    <tbody>
+      <tr><td>随机采样</td><td>按 <code>min(1,p/q)</code> 接受，拒绝时按 residual 修正</td><td>最终序列分布与 target sampler 相同</td></tr>
+      <tr><td>greedy / temperature 0</td><td>候选等于 target argmax 才接受，否则改为 target argmax</td><td>最终 token 序列与 target greedy 相同</td></tr>
+      <tr><td>只用概率阈值接受</td><td>工程启发式，不等于上述精确算法</td><td>通常会改变输出分布，必须单独评估质量</td></tr>
+    </tbody>
+  </table>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。q(x)=0 的 token 不会走 draft 接受路径；若 p(x)>0，它的概率质量由 residual 路径补回。" data-wrong-feedback="候选本身来自 q，所以 q(x)=0 时不会采到 x，也就不会真的计算 p/q。">
+    <strong>边界题</strong>
+    <p>某 token 满足 <code>q(x)=0</code>、<code>p(x)&gt;0</code>。算法会不会因为除零而丢失这个 token？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">会，q 必须覆盖每个 token</button>
+      <button data-answer="correct">否，q 不必覆盖每个 token</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>本节压缩</h2>
+  <ul>
+    <li>接受率 <code>min(1,p/q)</code> 保留两分布的重叠概率质量。</li>
+    <li>总接受概率 <code>β=Σmin(p,q)=1-TV(p,q)</code>。</li>
+    <li>拒绝后从 <code>norm((p-q)+)</code> 采样，只补 target 尚未获得的概率质量。</li>
+    <li>多 token 算法对每个仍有效的条件前缀依次应用单位置证明，因此保持整条序列分布。</li>
+  </ul>
+
+  <section class="callout">
+    <strong>主阅读</strong>
+    <p>精读 <a href="https://proceedings.mlr.press/v202/leviathan23a/leviathan23a.pdf">Leviathan et al., Section 2.3 与 Appendix A.1</a>。注意 <a href="https://arxiv.org/abs/2302.01318">Chen et al.</a> 使用了相反的字母约定：其论文中 target 是 <code>q</code>、draft 是 <code>p</code>。任何一步推导卡住，都可以把你的手算过程发给我逐行检查。</p>
+  </section>
+</main>
+
+
+</body></html>

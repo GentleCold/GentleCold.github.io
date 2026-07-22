@@ -1,0 +1,79 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Runtime 合同速查表</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Reference 0002</p>
+      <h1>Agent Runtime 合同</h1>
+      <p class="lede">模型提出意图，Runtime 管理事实、权限、执行与恢复。</p>
+    </header>
+
+    <section>
+      <h2>责任边界</h2>
+      <table class="compare">
+        <thead><tr><th>组件</th><th>应该负责</th><th>不应独自负责</th></tr></thead>
+        <tbody>
+          <tr><td>模型</td><td>理解目标、语义判断、提出候选动作</td><td>授予权限、确认事务成功、决定无限预算</td></tr>
+          <tr><td>Runtime</td><td>循环、状态、校验、预算、重试、检查点、终止</td><td>替代模型处理开放式语义判断</td></tr>
+          <tr><td>策略层</td><td>授权、风险分级、审批、数据边界</td><td>依赖自然语言承诺保证安全</td></tr>
+          <tr><td>工具层</td><td>执行有类型的外部读写并返回机器可判定结果</td><td>接受任意文本并拥有无限权限</td></tr>
+          <tr><td>评测层</td><td>依据外部事实判断任务是否成功</td><td>只询问模型“你完成了吗”</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>六个 Runtime 合同</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>事实源合同</h3><p>任务状态保存在结构化存储；prompt 只是视图，不是真相。</p></div>
+        <div class="layer" data-tone="teal"><h3>动作合同</h3><p>模型只能提出符合 schema 的有限动作。</p></div>
+        <div class="layer" data-tone="gold"><h3>策略合同</h3><p>每个动作在执行前经过权限、风险、预算和审批校验。</p></div>
+        <div class="layer" data-tone="coral"><h3>副作用合同</h3><p>写操作带唯一 action id，并支持幂等、补偿或人工确认。</p></div>
+        <div class="layer" data-tone="blue"><h3>生命周期合同</h3><p>明确完成、失败、暂停、取消、超时和 turn limit。</p></div>
+        <div class="layer" data-tone="teal"><h3>恢复合同</h3><p>关键边界写检查点；恢复时不重复已经成功的副作用。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>副作用执行模板</h2>
+      <ol>
+        <li>模型输出结构化 action proposal。</li>
+        <li>Runtime 校验 schema、权限、状态版本和预算。</li>
+        <li>高风险动作进入 human approval。</li>
+        <li>Runtime 分配稳定的 action id。</li>
+        <li>工具按 action id 幂等执行。</li>
+        <li>结果与外部凭证原子地写入状态。</li>
+        <li>Runtime 再把最小必要观察交给模型。</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>失败分类</h2>
+      <table class="compare">
+        <thead><tr><th>失败</th><th>示例</th><th>主要处理者</th></tr></thead>
+        <tbody>
+          <tr><td>语义失败</td><td>模型误解意图、选择了错误工具</td><td>模型策略、上下文、评测</td></tr>
+          <tr><td>校验失败</td><td>参数缺失、越权、金额超限</td><td>Runtime 与策略层</td></tr>
+          <tr><td>瞬时失败</td><td>超时、限流、临时网络错误</td><td>有界重试与退避</td></tr>
+          <tr><td>未知结果</td><td>请求超时但外部系统可能已扣款</td><td>幂等查询、对账、人工介入</td></tr>
+          <tr><td>永久失败</td><td>订单不存在、账户被关闭</td><td>停止、解释或改变计划</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0002-agent-runtime-contracts/">返回第二课</a>
+      <a href="0001-agent-architecture-reference.html">上一张速查表</a>
+    </nav>
+  </main>
+
+
+</body></html>

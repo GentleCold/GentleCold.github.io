@@ -1,0 +1,88 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent 架构速查表</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Reference 0001</p>
+      <h1>Agent 架构速查表</h1>
+      <p class="lede">用一条执行闭环和八个系统层，快速定位任何 Agent 组件。</p>
+    </header>
+
+    <section>
+      <h2>最小定义</h2>
+      <div class="callout">
+        <strong>Agent = 目标 + 上下文 + 模型决策 + 可执行动作 + 环境反馈 + 受控循环。</strong>
+        <p>如果下一步完全由预先写好的代码决定，它主要是 workflow；如果模型根据当前状态动态选择下一步，它具有 agentic control。</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>执行闭环</h2>
+      <div class="architecture" aria-label="Agent 执行闭环">
+        <div class="flow-row">
+          <div class="node state"><b>1. 构建上下文</b><small>目标、指令、会话、检索结果、工具描述、预算</small></div>
+          <div class="node model"><b>2. 模型决策</b><small>回答、调用工具、委派、请求澄清或停止</small></div>
+          <div class="node control"><b>3. 策略门禁</b><small>权限、参数校验、审批、预算、风险策略</small></div>
+          <div class="node action"><b>4. 执行动作</b><small>API、数据库、代码沙箱、浏览器、其他 Agent</small></div>
+          <div class="node state"><b>5. 写回观察</b><small>结果、错误和状态变化进入下一轮上下文</small></div>
+        </div>
+        <p class="loop-label">未完成且预算允许：5 → 1；否则输出、失败、暂停或交给人</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>八层架构</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>1. 交互层</h3><p>用户、事件、API、UI；负责输入输出和身份。</p></div>
+        <div class="layer" data-tone="gold"><h3>2. 编排层</h3><p>生命周期、循环、路由、恢复、暂停、handoff。</p></div>
+        <div class="layer" data-tone="teal"><h3>3. 模型层</h3><p>推理与决策；模型选择、提示词、结构化输出。</p></div>
+        <div class="layer" data-tone="coral"><h3>4. 工具层</h3><p>把决策变成外部读写；schema、adapter、sandbox。</p></div>
+        <div class="layer" data-tone="blue"><h3>5. 状态与记忆层</h3><p>会话状态、检查点、检索、长期事实和制品。</p></div>
+        <div class="layer" data-tone="gold"><h3>6. 安全与治理层</h3><p>最小权限、审批、数据策略、注入防御和审计。</p></div>
+        <div class="layer" data-tone="teal"><h3>7. 观测与评测层</h3><p>trace、事件、成本、延迟、任务成功率和回归集。</p></div>
+        <div class="layer" data-tone="coral"><h3>8. 运行基础设施层</h3><p>队列、持久执行、隔离、密钥、并发和伸缩。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>常见概念归位</h2>
+      <table class="compare">
+        <thead><tr><th>概念</th><th>它是什么</th><th>它不是什么</th></tr></thead>
+        <tbody>
+          <tr><td>RAG</td><td>上下文构建中的检索机制</td><td>完整 Agent 或长期记忆本身</td></tr>
+          <tr><td>MCP</td><td>Host 与工具/资源服务之间的协议</td><td>决策循环、编排器或多 Agent 框架</td></tr>
+          <tr><td>Memory</td><td>跨步骤或跨会话保存并召回状态</td><td>把全部聊天记录无限塞入 prompt</td></tr>
+          <tr><td>Workflow</td><td>代码预定义控制流</td><td>模型动态决定所有下一步</td></tr>
+          <tr><td>Multi-agent</td><td>多个有边界的决策单元通过协议协作</td><td>自动比单 Agent 更强或更可靠</td></tr>
+          <tr><td>Guardrail</td><td>输入、输出、动作和运行时的约束</td><td>一句“请保持安全”的系统提示词</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>生产评审六问</h2>
+      <ol>
+        <li>哪一步必须由模型决定，哪一步可以写成确定性代码？</li>
+        <li>每个工具能读什么、写什么，副作用能否幂等、撤销或审批？</li>
+        <li>状态的事实来源在哪里，失败后从哪个检查点恢复？</li>
+        <li>终止条件、时间、token、金额和循环预算是什么？</li>
+        <li>如何知道任务真的成功，而不只是模型声称成功？</li>
+        <li>发生错误、越权或不确定时，如何降级并交给人？</li>
+      </ol>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0001-agent-architecture-map/">返回第一课</a>
+    </nav>
+  </main>
+
+
+</body></html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 01：Draft–Verify 的系统契约</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+  <span class="teach-publish-spacer"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <a class="teach-publish-link teach-publish-next" href="/teach/mtp/0002-exact-speculative-sampling/">下一课：Lesson 02：为什么投机采样严格无偏</a>
+</nav>
+<main>
+  <header>
+    <p class="meta">Lesson 01 · 目标用时 15 分钟</p>
+    <h1>Draft–Verify 的系统契约</h1>
+    <p class="subtitle">本节只解决一个问题：一次投机迭代到底做了什么，以及为什么“一次目标模型前向”能够确认多个位置。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/0002-exact-speculative-sampling/">下一课：无偏采样</a>
+      <a href="/teach/mtp/reference/0001-speculative-decoding-mtp-reference.html">速查页</a>
+    </nav>
+  </header>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。串行依赖属于 token 值；给定一条候选路径后，Transformer 可以用 causal mask 并行算出路径上各位置的条件分布。" data-wrong-feedback="再想一步：训练时整段序列的所有 next-token logits 为什么能在一次前向中并行得到？">
+    <strong>先预测</strong>
+    <p>自回归分解要求 <code>xₜ₊₂</code> 依赖 <code>xₜ₊₁</code>。这是否意味着目标模型在验证 4 个 draft tokens 时必须串行运行 4 次？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">是，目标必须串行验证四个位置</button>
+      <button data-answer="correct">否，目标可以并行验证四个位置</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>1. 慢的不是算术总量，而是串行 critical path</h2>
+  <p>标准 decode 在第 <code>t</code> 步先读入模型权重和历史 KV，得到 <code>p(xₜ₊₁ | x≤t)</code>，采出 token 后才能开始下一步。生成 <code>N</code> 个 token 因而需要 <code>N</code> 次目标模型串行调用。</p>
+  <p>在 batch 较小的在线解码里，每一步常常受模型权重、KV cache 的内存带宽以及 tensor-parallel collective 延迟限制。一次只处理一个新 token，GPU 的矩阵计算能力没有被充分填满。Chen et al. 将这点拆为 linear layers、attention/KV 读取和 all-reduce 三类开销，并指出：对一小段已知 continuation 做并行 scoring，延迟可能接近单 token decode。</p>
+
+  <section class="callout draft">
+    <strong>关键转换</strong>
+    <p>自回归生成不能预先知道未来 token；但如果某个便宜过程先给出一条候选未来，目标 Transformer 就可以像 teacher forcing 一样，一次为候选路径的所有位置计算 logits。</p>
+  </section>
+
+  <h2>2. 一次迭代的四段契约</h2>
+  <div class="pipeline" aria-label="投机解码流水线">
+    <div class="draft-stage">
+      <strong>1 · Propose</strong>
+      便宜的 draft 分布 <code>q</code> 自回归提出 <code>γ</code> 个候选 token。
+    </div>
+    <div class="target-stage">
+      <strong>2 · Score</strong>
+      目标模型 <code>p</code> 对整条候选路径做一次 causal forward，产出 <code>γ+1</code> 组分布。
+    </div>
+    <div class="target-stage">
+      <strong>3 · Accept</strong>
+      从左到右检查候选；只能提交首个拒绝之前的最长前缀。
+    </div>
+    <div class="reject-stage">
+      <strong>4 · Correct</strong>
+      首个拒绝处按修正分布采一个 token；若全接受，则从最后一组目标分布采 bonus token。
+    </div>
+  </div>
+
+  <p>设当前已提交前缀为 <code>x≤t</code>，draft 提出 <code>y₁, y₂, …, yγ</code>。目标模型一次前向得到：</p>
+  <div class="formula">
+    p₁(· | x≤t), p₂(· | x≤t,y₁), …, p<sub>γ+1</sub>(· | x≤t,y₁,…,yγ)
+  </div>
+  <p>注意第 <code>i</code> 组 logits 位于候选路径的第 <code>i</code> 个位置，并且通过 causal mask 只能看到它左边的 token。因此它与把目标模型沿同一条路径逐 token 运行所得的条件分布相同；区别只是这些位置在硬件上被并行处理。</p>
+
+  <h2>3. 为什么首个拒绝后必须停止</h2>
+  <div class="token-row" aria-label="候选 token 验证示例">
+    <span class="token">prefix</span>
+    <span>→</span>
+    <span class="token accepted">y₁ ✓</span>
+    <span class="token accepted">y₂ ✓</span>
+    <span class="token rejected">y₃ ✗</span>
+    <span class="token">y₄ ?</span>
+  </div>
+  <p><code>p₄</code> 是在 <code>… y₂, y₃</code> 这个上下文下算出的。一旦 <code>y₃</code> 被拒绝并替换为 <code>z₃</code>，真正的上下文变成 <code>… y₂, z₃</code>；此前算出的 <code>p₄</code> 与后续 hidden/KV 都属于错误分支，不能提交。</p>
+  <section class="callout reject">
+    <strong>源码阅读不变量</strong>
+    <p>acceptance 不是逐个独立保留“所有正确 token”，而是提交 <strong>longest accepted prefix</strong>。首个拒绝之后，即使某个候选碰巧等于新路径上的目标采样，它的 logits 也来自错误条件，必须废弃。</p>
+  </section>
+
+  <h2>4. 每轮为什么至少前进 1，最多前进 γ+1</h2>
+  <div class="two-col">
+    <section class="panel">
+      <h3>首 token 就拒绝</h3>
+      <p>接受 0 个 draft，但在拒绝位置按目标修正分布采 1 个 token。因此仍前进 1。</p>
+    </section>
+    <section class="panel">
+      <h3>γ 个全部接受</h3>
+      <p>目标前向还计算了候选块之后的 <code>pγ+1</code>，可再采一个 bonus token。因此前进 <code>γ+1</code>。</p>
+    </section>
+  </div>
+  <p>这给出投机解码的结构性收益：每次昂贵目标调用仍至少有 baseline 的一个 token 进展，命中时则把多个串行 decode step 压进一次验证调用。这里还没有解释“随机采样时如何不改变分布”；那正是下一课的核心。</p>
+
+  <h2>5. KV cache 应如何理解</h2>
+  <table>
+    <thead><tr><th>状态</th><th>能否提交</th><th>原因</th></tr></thead>
+    <tbody>
+      <tr><td>已接受 draft prefix 对应的 target KV</td><td>能</td><td>它们位于最终输出的真实因果路径上。</td></tr>
+      <tr><td>首个被拒 draft token 的 target KV</td><td>不能直接提交</td><td>输出 token 会被 correction token 替代；需要为真实 token 建立对应状态。</td></tr>
+      <tr><td>拒绝位置之后的 target KV</td><td>不能</td><td>它们依赖已经被否定的候选前缀。</td></tr>
+      <tr><td>全接受时 bonus token 之前的 target KV</td><td>能</td><td>整条候选路径被确认；bonus token 自己通常在后续 decode 建 KV。</td></tr>
+    </tbody>
+  </table>
+  <p>具体引擎可以预留槽位、批量写入后 truncate，或让 attention backend 返回可提交长度；实现不同，但“只让真实输出路径进入持久 decode state”这个契约不变。</p>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。y₄ 的评分条件包含已被拒绝的 y₃，因此 y₄ 及其 KV 都属于失效分支。" data-wrong-feedback="关键不是 y₄ 自身看起来对不对，而是计算 y₄ 分布时使用的左侧条件是否仍然成立。">
+    <strong>检索练习</strong>
+    <p>候选 <code>y₁,y₂</code> 被接受，<code>y₃</code> 被拒绝。目标模型对 <code>y₄</code> 的 logits 已经算好，而且 <code>y₄</code> 恰好等于下一轮目标模型的 argmax。现在能直接提交 <code>y₄</code> 吗？</p>
+    <div class="quiz-options">
+      <button data-answer="correct">不能，y₄ 的条件前缀已经失效</button>
+      <button data-answer="wrong">能，y₄ 的 token 值恰好相同</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>本节压缩</h2>
+  <ul>
+    <li>投机解码减少的是昂贵 target model 调用的串行次数，不保证减少 FLOPs。</li>
+    <li>候选路径已知后，causal Transformer 能一次并行算出路径上每个位置的条件分布。</li>
+    <li>验证只能提交最长接受前缀；首拒之后的 logits、hidden state 与 KV 全部失效。</li>
+    <li>每轮产出范围是 <code>[1, γ+1]</code> 个 token。</li>
+  </ul>
+
+  <section class="callout">
+    <strong>主阅读</strong>
+    <p>阅读 <a href="https://proceedings.mlr.press/v202/leviathan23a/leviathan23a.pdf">Leviathan et al., Section 2.1–2.3</a> 的 Algorithm 1。遇到不清楚的条件分布或 KV 状态问题，直接向我追问；下一课会逐项推导 Algorithm 1 中最容易被误抄的两条公式。</p>
+  </section>
+</main>
+
+
+</body></html>

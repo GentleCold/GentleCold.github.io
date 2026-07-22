@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>上下文、状态、记忆与 RAG 速查表</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Reference 0003</p>
+      <h1 class="compact-title">上下文、状态、记忆与 RAG</h1>
+      <p class="lede">不要问“Agent 记住了吗”，先问信息存在哪里、何时取出、是否可信、谁能修改。</p>
+    </header>
+
+    <section>
+      <h2>五个边界</h2>
+      <table class="compare">
+        <thead><tr><th>概念</th><th>定义</th><th>典型内容</th></tr></thead>
+        <tbody>
+          <tr><td>任务状态</td><td>当前任务的权威、结构化事实</td><td>阶段、预算、已执行 action、审批状态</td></tr>
+          <tr><td>本轮上下文</td><td>一次模型调用真正能看到的有限 token 序列</td><td>指令、状态投影、证据、工具 schema</td></tr>
+          <tr><td>短期记忆</td><td>同一 thread 内跨步骤保留的信息</td><td>对话、计划、最近观察、阶段摘要</td></tr>
+          <tr><td>长期记忆</td><td>跨 thread 召回的持久信息</td><td>用户偏好、稳定事实、历史经验</td></tr>
+          <tr><td>RAG</td><td>按当前问题从外部知识源检索并组装证据</td><td>代码片段、文档、工单、历史事故</td></tr>
+          <tr><td>制品存储</td><td>保存不适合直接进入 prompt 的完整对象</td><td>日志、trace、文件、图片、查询结果</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Context Builder 管线</h2>
+      <div class="architecture" aria-label="Context Builder 管线">
+        <div class="flow-row">
+          <div class="node state"><b>选择来源</b><small>任务状态、记忆、检索、工具和制品索引</small></div>
+          <div class="node model"><b>检索排序</b><small>按当前决策所需的相关性召回证据</small></div>
+          <div class="node control"><b>标注信任</b><small>区分系统指令、用户输入和外部数据</small></div>
+          <div class="node action"><b>压缩预算</b><small>去重、摘要、截断，并保留来源</small></div>
+          <div class="node state"><b>确定组装</b><small>按稳定模板生成本轮模型上下文</small></div>
+        </div>
+        <p class="loop-label">Context 是从系统事实生成的有限视图，不是系统事实本身</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>长期记忆写入门禁</h2>
+      <ol>
+        <li><strong>价值：</strong>未来任务是否真的需要？</li>
+        <li><strong>来源：</strong>事实来自用户确认、权威系统还是模型猜测？</li>
+        <li><strong>范围：</strong>属于用户、项目、组织还是单次任务？</li>
+        <li><strong>时效：</strong>是否需要 TTL、版本或失效条件？</li>
+        <li><strong>隐私：</strong>是否允许跨会话保存与召回？</li>
+        <li><strong>冲突：</strong>新事实如何覆盖或保留旧版本？</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>快速决策</h2>
+      <table class="compare">
+        <thead><tr><th>问题</th><th>优先放置</th></tr></thead>
+        <tbody>
+          <tr><td>任务恢复时必须准确存在？</td><td>任务状态或检查点</td></tr>
+          <tr><td>只服务当前一次模型判断？</td><td>本轮上下文</td></tr>
+          <tr><td>未来会话仍有稳定价值？</td><td>经过门禁的长期记忆</td></tr>
+          <tr><td>来自大型知识库并按问题选择？</td><td>RAG 索引与检索管线</td></tr>
+          <tr><td>体积大但偶尔需要局部读取？</td><td>制品存储加引用</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0003-context-state-memory-rag/">返回第三课</a>
+      <a href="0002-agent-runtime-contracts.html">上一张速查表</a>
+    </nav>
+  </main>
+
+
+</body></html>

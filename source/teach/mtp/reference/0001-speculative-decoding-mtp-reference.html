@@ -1,0 +1,115 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>速查：Speculative Decoding 与 MTP</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+</nav>
+<main>
+  <header>
+    <p class="meta">Reference · 打印友好</p>
+    <h1>Speculative Decoding 与 MTP 速查</h1>
+    <p class="subtitle">统一符号：<code>p</code> 是 target，<code>q</code> 是 draft。Chen et al. 原文采用相反字母，请阅读时先映射。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/0001-draft-verify-contract/">Lesson 01</a>
+      <a href="/teach/mtp/0002-exact-speculative-sampling/">Lesson 02</a>
+      <a href="/teach/mtp/0003-mtp-and-speed-model/">Lesson 03</a>
+    </nav>
+  </header>
+
+  <h2>符号表</h2>
+  <table>
+    <thead><tr><th>符号</th><th>含义</th><th>常见误读</th></tr></thead>
+    <tbody>
+      <tr><td><code>pᵢ(x)</code></td><td>target 在候选前缀第 i 个位置的实际采样分布</td><td>不要拿 raw logits 直接代入</td></tr>
+      <tr><td><code>qᵢ(x)</code></td><td>draft 产生第 i 个候选 token 时使用的分布</td><td>必须对应真实 proposal processor</td></tr>
+      <tr><td><code>γ</code></td><td>每轮 draft token 数</td><td>不等于最终每轮 token 数，最大是 γ+1</td></tr>
+      <tr><td><code>β</code></td><td>某位置的接受概率，<code>Σmin(p,q)</code></td><td>不等于简单 top-1 命中率</td></tr>
+      <tr><td><code>α</code></td><td>跨上下文/位置的平均接受率，用于简化性能模型</td><td>真实 acceptance 往往随位置递减</td></tr>
+      <tr><td><code>c</code></td><td>一个 draft step / 一个 target step 的成本比</td><td>不是参数量比，也不是单看 FLOPs</td></tr>
+    </tbody>
+  </table>
+
+  <h2>精确 speculative sampling</h2>
+  <div class="formula">a(x) = min(1, p(x)/q(x))</div>
+  <div class="formula">β = Σₓ min(p(x),q(x)) = 1 − TV(p,q)</div>
+  <div class="formula">p′(x) = norm((p(x)−q(x))<sub>+</sub>) = max(p(x)−q(x),0)/(1−β)</div>
+  <p><code>q(x)=0</code> 时不会真的被 draft 采出，因而不会发生除零；若 <code>p(x)&gt;0</code>，该质量由 residual 补回。</p>
+
+  <h2>一次迭代伪代码</h2>
+  <pre><code>draft: for i = 1..γ:
+    q_i = Q(prefix + y[:i-1])
+    y_i ~ q_i
+
+target: [p_1, ..., p_(γ+1)] = P(prefix + y_1..y_γ)
+
+for i = 1..γ:
+    accept y_i with probability min(1, p_i[y_i] / q_i[y_i])
+    if rejected:
+        z ~ norm(max(p_i - q_i, 0))
+        return accepted_prefix + z
+
+bonus z ~ p_(γ+1)
+return y_1..y_γ + z</code></pre>
+
+  <h2>正确性证明骨架</h2>
+  <ol>
+    <li>接受路径给 token <code>x</code> 的质量：<code>q(x)min(1,p(x)/q(x)) = min(p,q)</code>。</li>
+    <li>拒绝概率：<code>1−β = Σ[p(x)−min(p(x),q(x))]</code>。</li>
+    <li>拒绝路径给 token <code>x</code> 的质量：<code>(1−β)p′(x)=p(x)−min(p,q)</code>。</li>
+    <li>两条互斥路径相加：<code>min(p,q)+p−min(p,q)=p</code>。</li>
+    <li>在每个仍有效的条件前缀上重复，得到整条序列分布保持。</li>
+  </ol>
+
+  <h2>期望进展与速度</h2>
+  <div class="formula">E[tokens/iteration] = 1 + α + … + α<sup>γ</sup> = (1−α<sup>γ+1</sup>)/(1−α)</div>
+  <div class="formula">ideal speedup = E[tokens/iteration] / (1 + γc)</div>
+  <div class="formula">practical speedup ≈ E[tokens/iteration] / (v(γ,B,L) + γc + o)</div>
+  <p><code>v</code> 是 target verification 相对 baseline 单 token decode 的成本；<code>o</code> 包括调度、采样张量搬运和 KV 状态管理。任何实测都应报告 batch、context、γ、采样方式、硬件和指标。</p>
+
+  <h2>MTP 的两种结构</h2>
+  <table>
+    <thead><tr><th>结构</th><th>核心计算</th><th>作为 proposer 时的含义</th></tr></thead>
+    <tbody>
+      <tr><td>并行 future heads（Gloeckle et al.）</td><td>共享 trunk 表示 <code>z≤t</code>，多个 heads 分别预测 <code>xₜ₊ᵢ</code></td><td>便宜地产生多位置候选，但后续位置未必条件化在前一候选上；需要 verify</td></tr>
+      <tr><td>顺序 MTP modules（DeepSeek-V3）</td><td><code>hᵢᵏ</code> 接收前一深度状态与未来 token embedding</td><td>保留完整 causal chain，更自然地生成 draft chain；仍需 target verify</td></tr>
+    </tbody>
+  </table>
+
+  <h2>源码检查清单</h2>
+  <ol>
+    <li>proposal 的 token 与 <code>qᵢ</code> 是否从同一个 sampling processor 得出？</li>
+    <li>target logits 的位置是否对应 <code>prefix + candidate</code> 的 causal shift？</li>
+    <li>accept 是否是最长前缀，而非每个位置独立过滤？</li>
+    <li>首拒后的 token 是否从 residual 采样，而不是从完整 target <code>p</code> 重采？</li>
+    <li>全接受时是否正确使用 <code>pγ+1</code> bonus token？</li>
+    <li>无效候选后缀的 token、KV block、sequence length、RNG 语义是否回收/截断？</li>
+    <li>性能计数是否拆开 draft、verify、accept/correct 和 state management？</li>
+  </ol>
+
+  <h2>术语边界</h2>
+  <table>
+    <thead><tr><th>术语</th><th>一句话定义</th></tr></thead>
+    <tbody>
+      <tr><td>speculative decoding</td><td>用便宜 proposal 先猜、用 target 批量验证，并通过规则保证最终输出语义。</td></tr>
+      <tr><td>speculative sampling</td><td>随机采样场景下的 modified rejection sampling；核心是接受率与 residual。</td></tr>
+      <tr><td>self-speculative decoding</td><td>proposal 与 target 来自同一模型体系，例如 early exit、MTP heads/modules。</td></tr>
+      <tr><td>MTP</td><td>训练/结构范式：在一个位置预测多个未来 token；不是完整的解码协议。</td></tr>
+      <tr><td>blockwise parallel decoding</td><td>较早的 greedy 版本：并行提出候选，target 接受最长匹配前缀。</td></tr>
+      <tr><td>acceptance rate</td><td>候选被 verifier 接受的概率/比例；它影响速度，不直接定义质量。</td></tr>
+    </tbody>
+  </table>
+
+  <section class="callout">
+    <strong>回忆提示</strong>
+    <p>合上页面后回答四句：① q 过度提出一个 token 时怎么处理？② q 欠缺的 p 质量在哪里补？③ 为什么首拒后不能继续用 logits？④ MTP 哪一部分提供候选，哪一部分保证正确性？想核对答案时回到对应课程。</p>
+  </section>
+</main>
+
+
+</body></html>

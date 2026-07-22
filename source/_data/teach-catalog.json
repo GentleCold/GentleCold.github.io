@@ -2,15 +2,48 @@
   "schema_version": 1,
   "courses": [
     {
-      "course_id": "daser-kv-save-load-path",
-      "title": "DaseR KV Save/Load Path",
-      "source_fingerprint": "44aeb8b13d79c94701c6e064c1a6578fd579d606ca7ca5cf8b3b8cd46912612b",
-      "why": "Understand the current DaseR iouring + prefix-mode KV cache path well enough to debug scheduler decisions, staging transfers, and L1/L2 behavior without guessing from names alone.",
+      "course_id": "agent",
+      "title": "Agent 系统架构",
+      "source_fingerprint": "683a174e027ad1728ade0b15cab2c2b3f98a4128acc397c59523069928086885",
+      "why": "建立一套不依赖具体框架的 Agent 架构心智模型，最终能够独立设计、评审并演进一个生产级 Agent 系统，而不是停留在调用 LLM API 或拼装框架组件。",
       "lessons": [
         {
-          "id": "0001-daser-iouring-prefix-save-load",
+          "id": "0001-agent-architecture-map",
           "number": 1,
-          "title": "DaseR iouring + prefix save/load 路径"
+          "title": "第一课：读懂 Agent 的完整架构"
+        },
+        {
+          "id": "0002-agent-runtime-contracts",
+          "number": 2,
+          "title": "第二课：Agent Runtime 控制什么"
+        },
+        {
+          "id": "0003-context-state-memory-rag",
+          "number": 3,
+          "title": "第三课：上下文、状态、记忆与 RAG"
+        }
+      ]
+    },
+    {
+      "course_id": "mtp",
+      "title": "MTP 与投机解码",
+      "source_fingerprint": "671826d8531c76db1ce5d5b95703e9a7c3de73179db16b80f33a6bf727827698",
+      "why": "建立足够严格的 MTP（Multi-Token Prediction）与投机解码心智模型，以便独立阅读论文，并能沿着 vLLM 等推理框架源码追踪 draft、verify、accept、correct 的完整数据流。",
+      "lessons": [
+        {
+          "id": "0001-draft-verify-contract",
+          "number": 1,
+          "title": "Lesson 01：Draft–Verify 的系统契约"
+        },
+        {
+          "id": "0002-exact-speculative-sampling",
+          "number": 2,
+          "title": "Lesson 02：为什么投机采样严格无偏"
+        },
+        {
+          "id": "0003-mtp-and-speed-model",
+          "number": 3,
+          "title": "Lesson 03：MTP 如何成为 proposer"
         }
       ]
     }
