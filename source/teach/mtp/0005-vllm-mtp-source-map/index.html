@@ -1,0 +1,142 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 05：vLLM 源码里的 MTP 一轮调用链</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+  <script src="../assets/stepper.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/mtp/0004-one-mtp-speculative-round/">上一课：Lesson 04：走完一轮 MTP 投机解码</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+<main>
+  <header>
+    <p class="meta">Lesson 05 · 目标用时 25 分钟 · 固定源码版本</p>
+    <h1>vLLM 源码里的 MTP 一轮调用链</h1>
+    <p class="subtitle">把上一课的抽象流程贴到最新 vLLM：上一轮 draft 如何进入 scheduler，本轮 target 如何验证，以及本轮结束后下一轮 draft 从哪里来。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/0004-one-mtp-speculative-round/">上一课</a>
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/reference/0002-vllm-mtp-source-map.html">本课速查页</a>
+    </nav>
+  </header>
+
+  <section class="callout draft">
+    <strong>源码版本先钉死</strong>
+    <p>本课所有路径和行号都对应 vLLM commit <code>3de4b2bf3c477513afff4a58680eb00d557bb53a</code>（2026-07-22）。源码会继续变化，所以先看 commit，再看类名。</p>
+  </section>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。本轮先验证 scheduler 带来的旧 draft；验证结果随后驱动下一轮 proposal。" data-wrong-feedback="把 iteration 边界画出来：旧 draft 在本轮开始时已经存在，本轮 proposal 要等 target verification 完成后才生成。">
+    <strong>先预测</strong>
+    <p>在 vLLM 的一次 iteration 中，哪句话更准确？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">先生成 draft，再在同一调用里验证这批 draft</button>
+      <button data-answer="correct">先验证上一轮 draft，再生成下一轮 draft</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <h2>先画跨 iteration 的边界</h2>
+  <p>固定一个请求：真实前缀是 <code>我 喜欢</code>。假设上一轮已经留下 draft <code>[吃, 苹果, 。]</code>。本课只追一个事实：这些 token 如何穿过 scheduler、GPU runner 和 EngineCore。</p>
+  <div class="pipeline" aria-label="vLLM speculative iteration data flow">
+    <div class="draft-stage"><strong>Iteration N 开始</strong><code>request.spec_token_ids</code> 保存上一轮 draft。</div>
+    <div class="target-stage"><strong>本轮验证</strong>scheduler 调度 draft，target forward 计算验证 logits。</div>
+    <div class="reject-stage"><strong>采样决定</strong><code>RejectionSampler</code> 产出 accepted、correction 或 bonus。</div>
+    <div class="draft-stage"><strong>Iteration N+1</strong>speculator proposal 写回新的 <code>spec_token_ids</code>。</div>
+  </div>
+
+  <h2>逐步跟源码走一遍</h2>
+  <p>点击下一步时，只问“现在手里传的对象是什么”。每一步的源码链接都固定在本课版本。</p>
+  <section class="tool stepper" data-stepper="">
+    <div class="stepper-toolbar">
+      <span class="stepper-progress" data-stepper-progress="" aria-live="polite"></span>
+      <div class="stepper-actions">
+        <button type="button" data-stepper-reset="">重新开始</button>
+        <button type="button" data-stepper-next="">下一步</button>
+      </div>
+    </div>
+
+    <section class="step-panel" data-stepper-panel="">
+      <p class="meta">步骤 1：配置决定“用哪种 proposer”</p>
+      <p><code>SpeculativeConfig.__post_init__</code> 看到 <code>method="mtp"</code> 且没有单独 draft model 时，会把 target 的模型名复制给 <code>self.model</code>，并对齐 quantization。这说明 MTP draft 结构可以来自同一个 target checkpoint。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/config/speculative.py#L666-L705">vllm/config/speculative.py#L666-L705</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 2：worker 选择 V2，必要时回退 V1</p>
+      <p>最新 vLLM 不是“所有 MTP 都走 V2”。<code>VllmConfig.use_v2_model_runner</code> 先根据架构、Triton 和不支持特性做判断；GPU worker 随后在 <code>model_runner.py</code>（V2）与 <code>gpu_model_runner.py</code>（V1）之间选择。第五课主读 V2，但这个 fallback 是读源码时必须保留的分支。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/config/vllm.py#L550-L591">vllm/config/vllm.py#L550-L591</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu_worker.py#L372-L411">gpu_worker.py#L372-L411</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 3：MTP 工厂创建 speculator</p>
+      <p><code>init_speculator</code> 根据 <code>speculative_config.method</code> 创建 <code>MTPSpeculator</code>。这个类继承 <code>AutoRegressiveSpeculator</code>，并通过 <code>load_eagle_model</code> 复用 draft loader。类名叫 EAGLE loader，不代表算法目标变成 EAGLE；继续看调用者和输入输出。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/__init__.py#L9-L29">spec_decode/__init__.py#L9-L29</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/mtp/speculator.py#L12-L18">mtp/speculator.py#L12-L18</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 4：上一轮 draft 进入本轮 scheduler</p>
+      <p>scheduler 读取 <code>request.spec_token_ids</code>，把它放进 <code>scheduled_spec_decode_tokens</code>，然后清空 request 上的旧列表。于是 <code>[吃, 苹果, 。]</code> 成为本轮 GPU 输入的一部分，而不是本轮才临时猜出来的。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/core/sched/scheduler.py#L618-L634">scheduler.py#L618-L634</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 5：InputBatch 排好要取哪些 logits</p>
+      <p>V2 runner 根据每个 request 的 draft 数量建立 <code>num_draft_tokens_per_req</code>、<code>cu_num_logits</code> 和 <code>logits_indices</code>。有 draft 时，target 要处理的不再只是每个 request 的一个普通 decode logits，还包括 draft 位置与 bonus 位置。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L895-L1074">v1/worker/gpu/model_runner.py#L895-L1074</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 6：target verification 交给 rejection sampler</p>
+      <p><code>sample</code> 先用 target model 计算 logits；检测到 draft 后，把这些 logits、InputBatch 和 speculator 保存的 draft logits 交给 <code>RejectionSampler</code>。它返回 <code>num_sampled</code> 与 <code>num_rejected</code>，也就把“接受了多少、首拒后回退多少”变成后续 proposal 的输入。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L1106-L1138">model_runner.py#L1106-L1138</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py#L103-L162">rejection_sampler.py#L103-L162</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 7：本轮结束后，speculator 提议下一轮</p>
+      <p><code>sample_tokens</code> 先完成 sample 和 postprocess，再调用 <code>self.speculator.propose(...)</code>。proposal 会收到 target hidden states、<code>num_sampled</code>、<code>num_rejected</code> 等状态，生成新的 draft tokens，并交给 <code>DraftTokensHandler</code>。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L1414-L1559">model_runner.py#L1414-L1559</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py#L128-L274">autoregressive/speculator.py#L128-L274</a></p>
+    </section>
+
+    <section class="step-panel" data-stepper-panel="" hidden="">
+      <p class="meta">步骤 8：EngineCore 把 draft 放回 request</p>
+      <p>同步调度路径中，<code>EngineCore.post_step</code> 取出 worker 的 draft token ids，调用 scheduler 的 <code>update_draft_token_ids</code>，最终写回 <code>request.spec_token_ids</code>。下一次 iteration 又从步骤 4 开始。</p>
+      <p class="source-path"><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/engine/core.py#L608-L615">engine/core.py#L608-L615</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/core/sched/scheduler.py#L2051-L2071">scheduler.py#L2051-L2071</a></p>
+    </section>
+  </section>
+
+  <h2>源码地图压缩成一条线</h2>
+  <pre><code>request.spec_token_ids
+  → scheduler.scheduled_spec_decode_tokens
+  → V2 InputBatch / logits_indices
+  → target forward + RejectionSampler
+  → num_sampled, num_rejected
+  → speculator.propose(...)
+  → DraftTokensHandler
+  → EngineCore.post_step
+  → request.spec_token_ids（下一轮）</code></pre>
+  <p>这里最容易混淆的是时间：<code>request.spec_token_ids</code> 不是“当前 target 刚生成的 token”，而是上一轮 proposal 留给下一轮验证的候选。验证和 proposal 在逻辑上相邻，但跨过了 iteration 边界。</p>
+
+  <section class="exercise" data-quiz="" data-correct-feedback="正确。它先进入 sample_tokens 的 proposal，再影响 draft 输入布局；scheduler 负责把结果带到下一轮。" data-wrong-feedback="num_rejected 不是只用于统计。它会作为 speculator.propose 的参数，影响被拒位置后的 draft 输入准备。">
+    <strong>收尾检查</strong>
+    <p>在这条调用链中，<code>num_rejected</code> 最直接传给谁？</p>
+    <div class="quiz-options">
+      <button data-answer="wrong">只传给 EngineCore 做监控统计</button>
+      <button data-answer="correct">传给 speculator.propose，准备下一轮 draft</button>
+    </div>
+    <div class="feedback" data-feedback="" aria-live="polite"></div>
+  </section>
+
+  <section class="callout">
+    <strong>主阅读</strong>
+    <p>打开 <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L1414-L1559">V2 <code>sample_tokens</code></a>，只做一个动作：沿着 <code>num_rejected</code> 向前追，直到 <code>propose</code>。然后再回到 <a href="/teach/mtp/reference/0002-vllm-mtp-source-map.html">本课速查页</a>。下一课我们再拆 Triton rejection kernel；本课先把跨 iteration 的地图记牢。哪里看不懂，继续问我。</p>
+  </section>
+</main>
+
+
+</body></html>

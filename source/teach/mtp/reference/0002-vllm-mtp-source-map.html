@@ -1,0 +1,78 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>速查：vLLM MTP 源码调用链</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/mtp/">MTP 与投机解码</a>
+</nav>
+<main>
+  <header>
+    <p class="meta">Reference · 对应 vLLM commit 3de4b2bf</p>
+    <h1>vLLM MTP 源码调用链</h1>
+    <p class="subtitle">这张地图只记录一轮 speculative decoding 如何跨过 scheduler、V2 GPU runner、rejection sampler 和 EngineCore。</p>
+    <nav class="lesson-nav">
+      <a href="/teach/mtp/">课程首页</a>
+      <a href="/teach/mtp/0005-vllm-mtp-source-map/">Lesson 05</a>
+      <a href="/teach/mtp/reference/0001-speculative-decoding-mtp-reference.html">原理速查页</a>
+    </nav>
+  </header>
+
+  <section class="callout draft">
+    <strong>版本锚点</strong>
+    <p>vLLM commit <code>3de4b2bf3c477513afff4a58680eb00d557bb53a</code>。链接使用 commit 固定 URL，避免 <code>main</code> 漂移。</p>
+  </section>
+
+  <h2>一轮数据流</h2>
+  <pre><code>上一轮 draft
+request.spec_token_ids
+  ↓
+scheduler.scheduled_spec_decode_tokens
+  ↓
+V2 InputBatch: num_draft_tokens_per_req / logits_indices
+  ↓
+target model.compute_logits
+  ↓
+RejectionSampler
+  ↓
+num_sampled / num_rejected
+  ↓
+speculator.propose
+  ↓
+DraftTokensHandler
+  ↓
+EngineCore.post_step
+  ↓
+request.spec_token_ids（下一轮）</code></pre>
+
+  <h2>职责表</h2>
+  <table>
+    <thead><tr><th>源码对象</th><th>它回答的问题</th><th>固定链接</th></tr></thead>
+    <tbody>
+      <tr><td><code>SpeculativeConfig</code></td><td>MTP 是否复用 target checkpoint 的 draft 结构？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/config/speculative.py#L666-L705">speculative.py</a></td></tr>
+      <tr><td><code>use_v2_model_runner</code></td><td>本次运行选择 V2 还是回退 V1？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/config/vllm.py#L550-L591">vllm.py</a></td></tr>
+      <tr><td><code>init_speculator</code> / <code>MTPSpeculator</code></td><td>method=mtp 时创建哪个 proposer？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/__init__.py#L9-L29">factory</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/mtp/speculator.py#L12-L18">MTP</a></td></tr>
+      <tr><td>scheduler</td><td>上一轮 draft 怎样成为本轮输入？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/core/sched/scheduler.py#L618-L634">schedule</a></td></tr>
+      <tr><td>V2 <code>InputBatch</code></td><td>哪些位置需要 target logits？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L895-L1074">model_runner.py</a></td></tr>
+      <tr><td><code>sample</code> / <code>RejectionSampler</code></td><td>如何把 target logits 和 draft logits 变成接受/拒绝结果？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L1106-L1138">sample</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/rejection_sampler.py#L103-L162">sampler</a></td></tr>
+      <tr><td><code>sample_tokens</code> / <code>propose</code></td><td>验证后如何生成下一轮 draft？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/model_runner.py#L1414-L1559">sample_tokens</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py#L128-L274">propose</a></td></tr>
+      <tr><td><code>EngineCore.post_step</code> / <code>update_draft_token_ids</code></td><td>下一轮从哪里取回 draft？</td><td><a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/engine/core.py#L608-L615">post_step</a> · <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/core/sched/scheduler.py#L2051-L2071">update</a></td></tr>
+    </tbody>
+  </table>
+
+  <h2>读源码时的三个边界</h2>
+  <ol>
+    <li><strong>时间边界：</strong><code>spec_token_ids</code> 是上一轮产物，本轮只消费它。</li>
+    <li><strong>职责边界：</strong>MTP speculator 负责 proposal；target + rejection sampler 负责 verification 和 correction。</li>
+    <li><strong>实现边界：</strong>V2 是主读路径，但 worker 可能按配置回退到 V1，不要把 V2 文件名当成全局事实。</li>
+  </ol>
+
+  <h2>下一步追踪</h2>
+  <p>第五课停在 <code>RejectionSampler</code> 的入口。继续深入时，沿着它进入 <a href="https://github.com/vllm-project/vllm/blob/3de4b2bf3c477513afff4a58680eb00d557bb53a/vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py#L864-L1125">rejection_sampler_utils.py</a>，再看 Triton kernel 如何找到首拒、residual 或 bonus。这是下一课的范围。</p>
+</main>
+
+
+</body></html>

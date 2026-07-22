@@ -12,3 +12,4 @@ permalink: /teach/mtp/
 - [Lesson 02：为什么投机采样严格无偏](/teach/mtp/0002-exact-speculative-sampling/)
 - [Lesson 03：MTP 如何成为 proposer](/teach/mtp/0003-mtp-and-speed-model/)
 - [Lesson 04：走完一轮 MTP 投机解码](/teach/mtp/0004-one-mtp-speculative-round/)
+- [Lesson 05：vLLM 源码里的 MTP 一轮调用链](/teach/mtp/0005-vllm-mtp-source-map/)

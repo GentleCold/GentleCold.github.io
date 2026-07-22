@@ -484,6 +484,11 @@ button:focus-visible {
   font-size: 0.9rem;
 }
 
+.source-path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .print-only {
   display: none;
 }
