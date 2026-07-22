@@ -11,3 +11,4 @@ permalink: /teach/agent/
 - [第一课：读懂 Agent 的完整架构](/teach/agent/0001-agent-architecture-map/)
 - [第二课：Agent Runtime 控制什么](/teach/agent/0002-agent-runtime-contracts/)
 - [第三课：上下文、状态、记忆与 RAG](/teach/agent/0003-context-state-memory-rag/)
+- [第四课：编排、Workflow 与多 Agent](/teach/agent/0004-orchestration-and-multi-agent/)

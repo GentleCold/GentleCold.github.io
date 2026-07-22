@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>编排与多 Agent 速查表</title>
+  <link rel="stylesheet" href="../assets/course.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Reference 0004</p>
+      <h1 class="compact-title">编排与多 Agent</h1>
+      <p class="lede">先决定控制流是否需要动态性，再决定是否需要多个决策单元。</p>
+    </header>
+
+    <section>
+      <h2>架构选择阶梯</h2>
+      <table class="compare">
+        <thead><tr><th>场景</th><th>优先方案</th><th>理由</th></tr></thead>
+        <tbody>
+          <tr><td>步骤、规则和输出格式已知</td><td>确定性 workflow</td><td>可预测、便宜、容易测试</td></tr>
+          <tr><td>工具较少但路径需要动态判断</td><td>单 Agent</td><td>上下文集中，通信成本低</td></tr>
+          <tr><td>子任务独立且可以同时运行</td><td>并行编排</td><td>减少等待，但需要汇总和失败策略</td></tr>
+          <tr><td>领域边界清晰、权限不同</td><td>多 Agent</td><td>隔离上下文、工具和责任</td></tr>
+          <tr><td>只有增加 Agent 才能掩盖混乱</td><td>先重构 workflow</td><td>多 Agent 会放大协议和调试成本</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>六种常见编排模式</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>Prompt chaining</h3><p>把一个任务拆成固定的多个模型步骤，中间用结构化输出连接。</p></div>
+        <div class="layer" data-tone="gold"><h3>Routing</h3><p>先分类，再把请求送到最合适的路径、工具或专长 Agent。</p></div>
+        <div class="layer" data-tone="teal"><h3>Parallelization</h3><p>独立子任务并行执行，最后由汇总器合并结果并处理缺失项。</p></div>
+        <div class="layer" data-tone="coral"><h3>Orchestrator-workers</h3><p>中央 Agent 动态拆分任务，worker 完成局部工作并返回约定结果。</p></div>
+        <div class="layer" data-tone="blue"><h3>Evaluator-optimizer</h3><p>生成器产出结果，评估器按明确标准反馈，直到达到预算或质量门槛。</p></div>
+        <div class="layer" data-tone="gold"><h3>Handoff</h3><p>当前 Agent 把控制权和必要上下文交给另一个 Agent，所有权发生转移。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>多 Agent 必须先定义的合同</h2>
+      <ol>
+        <li><strong>角色边界：</strong>每个 Agent 能决定什么，不能决定什么？</li>
+        <li><strong>输入输出：</strong>交接使用什么 schema，哪些上下文必须过滤？</li>
+        <li><strong>状态所有权：</strong>谁能写任务状态，谁只能返回建议？</li>
+        <li><strong>工具权限：</strong>不同 Agent 的工具、数据和审批范围是什么？</li>
+        <li><strong>终止与预算：</strong>何时返回上层、升级给人或停止重试？</li>
+        <li><strong>失败语义：</strong>部分成功、超时、冲突和重复动作如何表达？</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>什么时候不该增加 Agent</h2>
+      <p>如果新增 Agent 只是为了让 prompt 变短、把同一个决策来回转发，或者把权限问题藏到另一个名字后面，它通常不会提升可靠性。新增 Agent 至少应该带来一种清晰收益：上下文隔离、权限隔离、领域专长、真正的并行度，或更容易验证的局部合同。</p>
+      <div class="callout">
+        <strong>多 Agent 是组织边界，不是能力魔法。</strong>
+        <p>每增加一个 Agent，就增加一次交接、一次失败面、一套观测责任和一份成本预算。</p>
+      </div>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0004-orchestration-and-multi-agent/">返回第四课</a>
+      <a href="0003-context-state-memory-rag.html">上一张速查表</a>
+    </nav>
+  </main>
+
+
+</body></html>

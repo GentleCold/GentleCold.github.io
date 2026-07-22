@@ -1,0 +1,126 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第四课：编排、Workflow 与多 Agent</title>
+  <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/quiz.js" defer=""></script>
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/agent/">Agent 系统架构</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/agent/0003-context-state-memory-rag/">上一课：第三课：上下文、状态、记忆与 RAG</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+  <main>
+    <header>
+      <p class="kicker">Lesson 0004 · 约 15 分钟</p>
+      <h1 class="compact-title">编排、Workflow 与多 Agent</h1>
+      <p class="lede">本课训练架构取舍：什么时候应该用确定性 workflow，什么时候用单 Agent，什么时候才值得拆成多个 Agent。</p>
+    </header>
+
+    <section>
+      <h2>先问“为什么动态”</h2>
+      <p>Agent 架构不是自主性越高越先进。先把任务拆成三类问题：</p>
+      <ol>
+        <li>路径是否已知？如果步骤、规则和输出格式稳定，优先写成 workflow。</li>
+        <li>下一步是否需要根据观察动态选择？如果是，单 Agent 往往足够。</li>
+        <li>是否存在清晰的上下文、权限或并行边界？只有这时才考虑多 Agent。</li>
+      </ol>
+      <div class="callout">
+        <strong>最小充分自主性：</strong>只给系统完成任务所需的动态决策权，不把本来可以确定的控制流交给模型。
+      </div>
+      <p>Anthropic 将 prompt chaining、routing、parallelization、orchestrator-workers、evaluator-optimizer 和 agents 视为不同的组合模式，并建议从最简单的方案开始。<a href="https://www.anthropic.com/engineering/building-effective-agents">阅读原文</a>。</p>
+    </section>
+
+    <section>
+      <h2>六种模式如何区别</h2>
+      <div class="layer-grid">
+        <div class="layer" data-tone="blue"><h3>Prompt chaining</h3><p>固定的模型步骤串联。适合“抽取 → 校验 → 改写”这类路径明确的任务。</p></div>
+        <div class="layer" data-tone="gold"><h3>Routing</h3><p>先分类，再选择路径、工具或专长 Agent。分类错误需要明确的 fallback。</p></div>
+        <div class="layer" data-tone="teal"><h3>Parallelization</h3><p>独立子任务同时执行，最后汇总。要定义部分失败、超时和结果冲突。</p></div>
+        <div class="layer" data-tone="coral"><h3>Orchestrator-workers</h3><p>中央 Agent 动态拆分任务，worker 返回结构化局部结果。</p></div>
+        <div class="layer" data-tone="blue"><h3>Evaluator-optimizer</h3><p>生成与评估交替，适合有明确质量标准且允许多轮修正的产物。</p></div>
+        <div class="layer" data-tone="gold"><h3>Handoff</h3><p>当前 Agent 把控制权交给另一个 Agent；交接的是任务所有权，不是随意复制全部上下文。</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>PegaFlow 故障调查 Agent</h2>
+      <p>调查 KV transfer timeout 时，可以把“收集事实”写成 workflow，再让一个诊断 Agent 动态判断下一步。只有在日志、代码和配置分析确实需要独立上下文或权限时，才拆 worker。</p>
+      <div class="architecture" aria-label="故障调查编排">
+        <div class="flow-row">
+          <div class="node state"><b>固定入口</b><small>创建 incident、锁定时间范围、读取节点状态</small></div>
+          <div class="node model"><b>诊断 Agent</b><small>根据观察选择日志、代码或配置检查</small></div>
+          <div class="node control"><b>路由与预算</b><small>限制并发、工具权限、调用轮次和成本</small></div>
+          <div class="node action"><b>专长 worker</b><small>必要时并行分析 trace、代码符号和运行配置</small></div>
+          <div class="node state"><b>汇总与升级</b><small>合并证据，给出结论或交给人工处理</small></div>
+        </div>
+        <p class="loop-label">确定性入口包围动态诊断；多 Agent 只出现在有真实边界的局部</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>多 Agent 的四种边界</h2>
+      <ol>
+        <li><strong>上下文边界：</strong>worker 只获得完成子任务所需的证据，避免共享无关历史。</li>
+        <li><strong>权限边界：</strong>worker 只能使用自己的工具和数据，不能通过 handoff 绕过审批。</li>
+        <li><strong>状态边界：</strong>一个组件拥有事实状态，其他 Agent 返回建议或带来源的结果。</li>
+        <li><strong>生命周期边界：</strong>每个 Agent 有清晰的输入、输出、超时、预算和失败协议。</li>
+      </ol>
+      <p>OpenAI Agents SDK 的 handoff 把控制权转移和输入过滤显式化；这正是多 Agent 设计应关注的协议，而不是仅仅创建更多模型实例。<a href="https://openai.github.io/openai-agents-python/handoffs/">查看 handoff 文档</a>。</p>
+    </section>
+
+    <section>
+      <h2>选择题：先选最小架构</h2>
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。三个步骤和规则已知时，确定性 workflow 更容易测试、计费和审计。" data-wrong-feedback="先看任务是否真的需要动态选择：路径已知时，把控制流交给模型只会增加不确定性。">
+        <p><strong>问题 1：</strong>步骤和规则都已知的“抽取 → 校验 → 输出”最适合什么？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">确定性工作流</button>
+          <button type="button" data-answer="wrong">动态单体流程</button>
+          <button type="button" data-answer="wrong">多体协作流程</button>
+          <button type="button" data-answer="wrong">开放对话流程</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。并行编排要求子任务相互独立，最后再汇总结果。" data-wrong-feedback="再看关键词“同时”：只有相互独立的子任务才适合并行。">
+        <p><strong>问题 2：</strong>多个独立子任务需要同时运行，优先考虑哪种模式？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">并行执行</button>
+          <button type="button" data-answer="wrong">串行执行</button>
+          <button type="button" data-answer="wrong">人工审批</button>
+          <button type="button" data-answer="wrong">随机路由</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+
+      <div class="quiz" data-quiz="" data-correct-feedback="正确。上下文、权限、状态或并行边界至少有一项真实存在，拆分才有工程收益。" data-wrong-feedback="多 Agent 的理由不是数量，而是边界。没有清晰边界时，先保持单 Agent 或 workflow。">
+        <p><strong>问题 3：</strong>决定是否增加 Agent，最先需要确认什么？</p>
+        <div class="answers">
+          <button type="button" data-answer="correct">边界清晰</button>
+          <button type="button" data-answer="wrong">模型更多</button>
+          <button type="button" data-answer="wrong">提示更长</button>
+          <button type="button" data-answer="wrong">调用更多</button>
+        </div>
+        <p class="feedback" data-feedback="" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="reading">
+      <h3>本课主阅读</h3>
+      <p><a href="https://www.anthropic.com/engineering/building-effective-agents">Anthropic: Building Effective Agents</a>。阅读时比较 workflow 与 agents 两节：每个模式带来了什么能力，又引入了什么新的失败面？</p>
+    </section>
+
+    <nav class="nav">
+      <a href="/teach/agent/0003-context-state-memory-rag/">上一课：上下文与记忆</a>
+      <a href="/teach/agent/reference/0004-orchestration-and-multi-agent.html">打开编排速查表</a>
+      <a href="/teach/agent/">返回 Agent 课程</a>
+    </nav>
+
+    <p>完成后，请为一个你熟悉的任务选择 workflow、单 Agent 或多 Agent，并说明：动态性在哪里，边界在哪里，失败如何回收。</p>
+  </main>
+
+
+</body></html>
