@@ -1,0 +1,149 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="用一次性访客和三个 FIFO 队列，直观理解 S3-FIFO 的论文思想。">
+  <title>S3-FIFO 为什么有效</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/s3-fifo/">理解 S3-FIFO 的设计思想</a>
+  <span class="teach-publish-spacer"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav>
+  <header>
+    <p class="eyebrow">S3-FIFO · Lesson 01 · 约 12 分钟</p>
+    <h1>S3-FIFO 为什么有效？</h1>
+    <p class="lede">先别背三个队列。真正要理解的是：缓存里最浪费空间的，往往不是“很久没访问”的对象，而是“以后根本不会再访问”的对象。</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="problem-title">
+      <h2 id="problem-title">1. LRU 像一家按“最近来过”排队的会员店</h2>
+      <p>假设店里只能留 100 位顾客。LRU 认为：刚来过的人更可能再来，所以每次顾客出现，都把他移到队伍最前面。</p>
+      <p>问题是，一场旅游团突然涌入：每个人只来一次，却会把老顾客不断挤出去。论文把这类只出现一次、之后不再复用的对象叫作 <strong>one-hit wonder</strong>。</p>
+      <div class="thesis">论文的关键观察：完整 trace 看起来可能没那么多“一次性对象”，但缓存容量有限，只能看到一个短窗口。在这个短窗口里，一次性对象的比例会骤增。</div>
+      <p>作者分析的 6594 条生产 trace 中，全 trace 的 one-hit wonder 比例中位数是 26%；当窗口缩短到每条 trace 唯一对象数的 10% 时，中位数升到 72%。这解释了为什么“尽早清掉只访问一次的对象”特别重要。</p>
+    </section>
+
+    <section aria-labelledby="insight-title">
+      <h2 id="insight-title">2. 两个动作，比复杂预测更重要</h2>
+      <div class="comparison">
+        <article class="panel">
+          <strong>Quick demotion</strong>
+          <p>新对象先试用。没有很快被复用，就尽快淘汰，避免污染主缓存。</p>
+        </article>
+        <article class="panel">
+          <strong>Lazy promotion</strong>
+          <p>命中时不急着移动对象，只记一个很小的热度计数；等到淘汰时再处理。</p>
+        </article>
+        <article class="panel">
+          <strong>Static queues</strong>
+          <p>队列大小固定，减少自适应参数和过度反应，行为更容易预测。</p>
+        </article>
+      </div>
+      <p>这三点合起来，就是名字里的三个 S：<strong>Simple、Scalable、Static</strong>。算法只用 FIFO 队列，但“何时快速放弃、何时有限续命”并不等同于普通 FIFO。</p>
+    </section>
+
+    <section aria-labelledby="queues-title">
+      <h2 id="queues-title">3. 三个队列，是三道不同的门</h2>
+      <div class="queue-grid">
+        <article class="panel">
+          <strong>S：试用区</strong>
+          <p>约占数据缓存 10%。新对象先来这里；很快被重复访问才有资格晋升。</p>
+        </article>
+        <article class="panel">
+          <strong>M：主缓存</strong>
+          <p>约占数据缓存 90%。保存已经证明有复用价值的对象。</p>
+        </article>
+        <article class="panel">
+          <strong>G：失物登记簿</strong>
+          <p>只保存被 S 淘汰对象的名字，不保存数据；容量与 M 的对象数相当。</p>
+        </article>
+      </div>
+      <p>G 很容易误解。它不是第三级数据缓存，而是一张便宜的“后悔记录”：某对象刚被淘汰又回来，说明 S 误判了它，下一次直接送入 M。</p>
+    </section>
+
+    <section aria-labelledby="rules-title">
+      <h2 id="rules-title">4. 把算法压缩成四条规则</h2>
+      <ol class="flow">
+        <li><strong>命中 S 或 M：</strong>热度计数加 1，最高为 3；对象不挪位置。</li>
+        <li><strong>未命中且 G 不认识：</strong>当作新人，放到 S 的队头。</li>
+        <li><strong>未命中但 G 认识：</strong>说明刚才淘汰得太早，直接放到 M。</li>
+        <li><strong>需要腾空间：</strong>S 中复用足够的对象进 M，其余只留名字到 G；M 中热度大于 0 的对象减 1 后回队头，热度为 0 才真正淘汰。</li>
+      </ol>
+      <p>注意一个细节：S 中对象要在淘汰检查前被<strong>再次命中两次</strong>，即计数大于 1，才直接晋升 M。M 则像“有几张续命券”：每次轮到淘汰时消耗一张，而不是每次命中都改队列。</p>
+    </section>
+
+    <section aria-labelledby="sim-title">
+      <h2 id="sim-title">5. 亲手推演：队列何时发生变化？</h2>
+      <p>下面把缓存缩成 4 个对象、S 阈值缩成 1，方便观察。真实论文默认 S:M 约为 1:9；演示比例不影响规则。</p>
+      <div class="simulator">
+        <div class="controls">
+          <button id="next-request" type="button">下一次请求</button>
+          <button id="reset-simulator" class="secondary" type="button">重置</button>
+        </div>
+        <div id="trace" class="trace" aria-label="请求序列"></div>
+        <p id="event-log" class="event-log" aria-live="polite"></p>
+        <div class="queue-grid">
+          <article class="panel">
+            <div class="queue-heading"><strong>S · 试用区</strong><span>队头 → 队尾</span></div>
+            <div id="small-queue" class="queue"></div>
+          </article>
+          <article class="panel">
+            <div class="queue-heading"><strong>M · 主缓存</strong><span>队头 → 队尾</span></div>
+            <div id="main-queue" class="queue"></div>
+          </article>
+          <article class="panel">
+            <div class="queue-heading"><strong>G · 登记簿</strong><span>新 → 旧</span></div>
+            <div id="ghost-queue" class="queue"></div>
+          </article>
+        </div>
+        <p class="legend"><code>f</code> 是封顶为 3 的访问计数；G 中只有 key，没有对象数据。</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-title">
+      <h2 id="why-title">6. 为什么它又快又准？</h2>
+      <h3>更准，不是因为 FIFO 会预测未来</h3>
+      <p>S 把大量只来一次的对象挡在主缓存外；G 又为“被误伤但很快回来”的对象提供纠错。M 只需要在淘汰时依据两位计数决定是否续命。</p>
+      <h3>更快，是因为命中路径很安静</h3>
+      <p>LRU 每次命中都要把对象移到队头，多线程下会争用同一份队列元数据。S3-FIFO 命中时通常只做一个封顶计数的原子更新；热门对象计数到 3 后，连计数也无需继续变化。论文的 Cachelib 原型在 16 线程上达到优化 LRU 的 6 倍以上吞吐量。</p>
+      <div class="thesis">一句话总结：S3-FIFO 把“每次命中都维护精确顺序”的成本，换成“淘汰时才做少量、粗粒度判断”。</div>
+    </section>
+
+    <section aria-labelledby="limits-title">
+      <h2 id="limits-title">7. 别把论文结论读成万能定律</h2>
+      <div class="thesis caveat">S3-FIFO 的弱点：如果大量对象恰好访问两次，但第二次总在离开小队列之后才到来，它们会连续产生两次 miss。LRU 或普通 FIFO 在某些小缓存下反而可能留得更久。</div>
+      <p>此外，论文的“6 倍吞吐”来自特定 Cachelib 原型、合成 Zipf trace 和 16 线程环境；它证明了设计的扩展性潜力，不等于任何系统换上 S3-FIFO 都自动快 6 倍。对象大小、显式删除、TTL、预取和缓存层级都会改变结果。</p>
+      <p>所以正确的论文结论是：<strong>在大量真实 trace 上，quick demotion 是一个强而稳健的信号，三个静态 FIFO 队列能以很低的命中路径成本利用它。</strong></p>
+    </section>
+
+    <section aria-labelledby="quiz-title">
+      <h2 id="quiz-title">1 分钟检验</h2>
+      <p><strong>问题：</strong>S3-FIFO 最重要的第一性洞察是什么？</p>
+      <div class="quiz-options">
+        <button type="button" data-quiz-answer="correct">尽快淘汰只访问一次的对象</button>
+        <button type="button" data-quiz-answer="wrong">每次命中都要移动对象位置</button>
+        <button type="button" data-quiz-answer="wrong">动态调整三个队列全部容量</button>
+        <button type="button" data-quiz-answer="wrong">完全拒绝所有对象首次请求</button>
+      </div>
+      <p id="quiz-result" class="quiz-result" aria-live="polite"></p>
+      <p>接下来可打开 <a href="../reference/s3fifo-cheatsheet.html">S3-FIFO 一页速查表</a>，然后不看答案，试着给我解释 S、M、G 各自解决什么问题。我会根据你的解释纠正遗漏。</p>
+    </section>
+
+    <section aria-labelledby="source-title">
+      <h2 id="source-title">首选原始资料</h2>
+      <p>推荐先读作者论文 <a href="https://jasony.me/publication/sosp23-s3fifo.pdf">《FIFO Queues Are All You Need for Cache Eviction》</a> 的摘要、第 3 节和第 4.1 节。课程中的比例、伪代码与实验数字均据此核对；官网的 <a href="https://s3fifo.com/blog/2023/08/01/fifo-queues-are-all-you-need-for-cache-eviction/">作者长文</a> 更适合第一次通读。</p>
+    </section>
+  </main>
+
+  <footer>
+    这节课还有哪里不清楚，直接问我。最有价值的问题通常是：“如果工作负载换成……，这条规则还成立吗？”
+  </footer>
+  <script src="../assets/queue-simulator.js"></script>
+
+
+</body></html>

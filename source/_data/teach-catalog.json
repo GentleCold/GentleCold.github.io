@@ -61,6 +61,19 @@
           "title": "Lesson 05：vLLM 源码里的 MTP 一轮调用链"
         }
       ]
+    },
+    {
+      "course_id": "s3-fifo",
+      "title": "理解 S3-FIFO 的设计思想",
+      "source_fingerprint": "650364334edfb53b01fb484c045feaa074c8e70bf12c17c7a75c4603cecc276a",
+      "why": "能够带着批判性视角阅读 S3-FIFO 论文，准确解释它为何能同时改善缓存命中率与并发扩展性，而不是只记住“三个 FIFO 队列”这个结论。",
+      "lessons": [
+        {
+          "id": "0001-why-s3fifo-works",
+          "number": 1,
+          "title": "S3-FIFO 为什么有效"
+        }
+      ]
     }
   ]
 }

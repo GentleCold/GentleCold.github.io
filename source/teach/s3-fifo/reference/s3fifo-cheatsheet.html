@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="S3-FIFO 算法的一页速查表。">
+  <title>S3-FIFO 一页速查表</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/s3-fifo/">理解 S3-FIFO 的设计思想</a>
+</nav>
+  <header>
+    <p class="eyebrow">S3-FIFO · Reference</p>
+    <h1>S3-FIFO 一页速查表</h1>
+    <p class="lede">核心目标：快速淘汰 one-hit wonders，低成本保留真正热点。</p>
+  </header>
+  <main>
+    <section>
+      <h2>三个队列</h2>
+      <div class="queue-grid">
+        <article class="panel"><strong>S · Small</strong><p>约 10% 数据容量；新对象的试用区。</p></article>
+        <article class="panel"><strong>M · Main</strong><p>约 90% 数据容量；已证明会复用的对象。</p></article>
+        <article class="panel"><strong>G · Ghost</strong><p>约等于 M 的条目数；只存被 S 淘汰对象的 key。</p></article>
+      </div>
+    </section>
+    <section>
+      <h2>读写与淘汰</h2>
+      <ol class="flow">
+        <li><strong>命中 S/M：</strong><code>freq = min(freq + 1, 3)</code>，不重排。</li>
+        <li><strong>新 key miss：</strong>先腾空间，再插入 S，<code>freq = 0</code>。</li>
+        <li><strong>Ghost hit：</strong>先腾空间，从 G 删除 key，插入 M。</li>
+        <li><strong>S 淘汰：</strong><code>freq &gt; 1</code> 则进 M，否则数据淘汰、key 进 G。</li>
+        <li><strong>M 淘汰：</strong><code>freq &gt; 0</code> 则减 1 并重插队头，否则真正淘汰。</li>
+      </ol>
+    </section>
+    <section>
+      <h2>读论文时记住</h2>
+      <div class="comparison">
+        <article class="panel"><strong>效率来源</strong><p>Quick demotion + Ghost 纠错 + 有限续命。</p></article>
+        <article class="panel"><strong>扩展性来源</strong><p>命中不维护全局精确顺序，FIFO 可用环形缓冲区。</p></article>
+        <article class="panel"><strong>主要反例</strong><p>大量对象只访问两次，且第二次晚于离开 S。</p></article>
+      </div>
+      <p><a href="/teach/s3-fifo/0001-why-s3fifo-works/">返回交互课程</a> · <a href="https://jasony.me/publication/sosp23-s3fifo.pdf">查看原论文</a></p>
+    </section>
+  </main>
+  <footer>速查表用于回忆，不替代在真实 trace 上验证假设。</footer>
+
+
+</body></html>
