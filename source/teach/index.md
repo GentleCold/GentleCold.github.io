@@ -10,6 +10,12 @@ permalink: /teach/
 
 共 1 节课。
 
+## [DaseR KV Save/Load Path](/teach/daser-kv-save-load-path/)
+
+Understand the current DaseR iouring + prefix-mode KV cache path well enough to debug scheduler decisions, staging transfers, and L1/L2 behavior without guessing from names alone.
+
+共 1 节课。
+
 ## [Agent 系统架构](/teach/agent/)
 
 建立一套不依赖具体框架的 Agent 架构心智模型，最终能够独立设计、评审并演进一个生产级 Agent 系统，而不是停留在调用 LLM API 或拼装框架组件。
@@ -21,3 +27,9 @@ permalink: /teach/
 建立足够严格的 MTP（Multi-Token Prediction）与投机解码心智模型，以便独立阅读论文，并能沿着 vLLM 等推理框架源码追踪 draft、verify、accept、correct 的完整数据流。
 
 共 5 节课。
+
+## [Kimi K3 架构与 KV Cache](/teach/kimi-k3-kv-cache/)
+
+把 Kimi K3 这类混合注意力、超大规模 MoE 模型拆成可执行的推理系统设计，能够读懂技术报告、定位缓存瓶颈，并在推理引擎中做出有依据的 KV/state cache 取舍。
+
+共 1 节课。
