@@ -17,7 +17,7 @@
 <pre>S_t = (I - β_t k_t k_tᵀ Diag(α_t)) S_{t-1} + β_t k_t v_tᵀ
 o_t = S_tᵀ q_t</pre>
 <p>所以 decode 阶段不需要把所有历史 K/V 逐 token 存下来；它需要的是“截至某个位置的 state”。这更接近 RNN 的状态快照，而不是普通 Transformer 的 KV 序列。prefill 可以按 chunk 并行，chunk 之间仍按 state 递归。</p>
-<div class="callout"><strong>工程判断：</strong> KDA 的 prefix cache 命中条件必须落在合法 chunk 边界，并带上 state 版本、位置和 dtype；只复制 token 数或 page 指针是不够的。</div>
+<div class="callout"><strong>工程判断：</strong> 如果 kernel 以 chunk 为并行和缓存单位，KDA 的 prefix cache 应优先落在合法 chunk 边界；任意 token 位置则需要保存该位置的精确 state，或重算 chunk 尾部。无论哪种方案，都必须带上 state 版本、位置和 dtype；只复制 token 数或 page 指针是不够的。</div>
 <h3>2. Gated MLA：把历史压成 latent，再重建 K/V</h3>
 <p>MLA 对每个 token 先得到压缩 latent <code>c_t = W_c x_t</code>，attention 计算时再通过 learned up-projection 重建内容 K/V。K3 的 Gated MLA 还对输出做输入相关的 full-rank gate。</p>
 <p>因此它的 cache 单位是 latent token/page：可以借用 PagedAttention 的逻辑页到物理 block 映射、prefix sharing 和 eviction 思路。注意：缓存的是 latent，不是“把 KDA 也塞进同一个 K/V buffer”。</p>
