@@ -10,12 +10,6 @@ permalink: /teach/
 
 共 1 节课。
 
-## [DaseR KV Save/Load Path](/teach/daser-kv-save-load-path/)
-
-Understand the current DaseR iouring + prefix-mode KV cache path well enough to debug scheduler decisions, staging transfers, and L1/L2 behavior without guessing from names alone.
-
-共 1 节课。
-
 ## [Agent 系统架构](/teach/agent/)
 
 建立一套不依赖具体框架的 Agent 架构心智模型，最终能够独立设计、评审并演进一个生产级 Agent 系统，而不是停留在调用 LLM API 或拼装框架组件。
