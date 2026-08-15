@@ -9,3 +9,4 @@ permalink: /teach/kimi-k3-kv-cache/
 ## 课程目录
 
 - [第一课：Kimi K3 不是一种 Cache](/teach/kimi-k3-kv-cache/0001-kimi-k3-architecture/)
+- [第二课：先搞懂 LatentMoE 和 KDA](/teach/kimi-k3-kv-cache/0002-latent-moe-and-kda-basics/)

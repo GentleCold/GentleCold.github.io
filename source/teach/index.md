@@ -16,14 +16,14 @@ permalink: /teach/
 
 共 4 节课。
 
+## [Kimi K3 架构与 KV Cache](/teach/kimi-k3-kv-cache/)
+
+把 Kimi K3 这类混合注意力、超大规模 MoE 模型拆成可执行的推理系统设计，能够读懂技术报告、定位缓存瓶颈，并在推理引擎中做出有依据的 KV/state cache 取舍。
+
+共 2 节课。
+
 ## [MTP 与投机解码](/teach/mtp/)
 
 建立足够严格的 MTP（Multi-Token Prediction）与投机解码心智模型，以便独立阅读论文，并能沿着 vLLM 等推理框架源码追踪 draft、verify、accept、correct 的完整数据流。
 
 共 5 节课。
-
-## [Kimi K3 架构与 KV Cache](/teach/kimi-k3-kv-cache/)
-
-把 Kimi K3 这类混合注意力、超大规模 MoE 模型拆成可执行的推理系统设计，能够读懂技术报告、定位缓存瓶颈，并在推理引擎中做出有依据的 KV/state cache 取舍。
-
-共 1 节课。

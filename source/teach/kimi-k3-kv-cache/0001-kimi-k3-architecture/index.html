@@ -5,7 +5,7 @@
   <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
   <span class="teach-publish-spacer"></span>
   <span class="teach-publish-link teach-publish-link-disabled"></span>
-  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <a class="teach-publish-link teach-publish-next" href="/teach/kimi-k3-kv-cache/0002-latent-moe-and-kda-basics/">下一课：第二课：先搞懂 LatentMoE 和 KDA</a>
 </nav><main class="wrap"><div class="kicker">Lesson 01 · Architecture map</div><h1>Kimi K3 不是一种 Cache</h1>
 <p class="lede">本课结束时，你能解释：为什么同一个 Kimi K3 请求里，KDA 和 Gated MLA 必须拥有不同的缓存契约。</p><hr class="rule">
 <h2>先看全局</h2><div class="flow"><div><strong>文本 / 图像</strong><br>MoonViT-V2 把视觉特征投到共享 embedding 空间。</div><div><strong>Attention Residuals</strong><br>沿深度选择性读取前面 block 的表示。</div><div><strong>3 × KDA</strong><br>线性、递归的 token mixing，维护 state。</div><div><strong>1 × Gated MLA</strong><br>全局内容交互，缓存压缩 latent。</div><div><strong>Stable LatentMoE</strong><br>每个 attention 后做稀疏 channel mixing。</div></div>
