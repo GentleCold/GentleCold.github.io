@@ -694,7 +694,7 @@ flowchart LR
     B --> C[MoonViT-V2 27层]
     C --> D[空间attention]
     C --> E[时间attention与pooling]
-    D --> F[2×2 pixel shuffle]
+    D --> F["2×2 pixel shuffle"]
     E --> F
     F --> G[轻量MLP projector]
     G --> H[与文本共享的7168维embedding流]
