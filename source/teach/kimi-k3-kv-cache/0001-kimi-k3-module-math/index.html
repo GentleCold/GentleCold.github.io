@@ -1,0 +1,150 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第一课：Kimi K3 四个核心模块的公式与真实张量流</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
+  <span class="teach-publish-spacer"></span>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+  <a class="teach-publish-link teach-publish-next" href="/teach/kimi-k3-kv-cache/0002-kimi-k3-prefill-decode-vllm/">下一课：第二课：一个请求走完 Kimi K3 的 prefill 与 decode</a>
+</nav><main class="wrap"><div class="kicker">Lesson 01 · Module math</div><h1>Kimi K3 四个核心模块的公式与真实张量流</h1>
+<p class="lede">目标不是记住“KDA 省缓存、MoE 省计算”这类结论，而是能从输入 <code>X</code> 开始，写出每个投影的 shape、状态更新式、输出 shape，以及为什么 vLLM 必须为 prefill 和 decode 选择不同执行路径。</p>
+<div class="callout"><strong>版本边界：</strong>模型数学以 Kimi K3 Technical Report 为准；实现 shape 对照 vLLM <code>f4b161d7</code>（2026-08-18）。以下 <code>T</code> 是本轮实际 token 数，<code>B</code> 是 decode 请求数，<code>d=7168</code>。TP=8 的局部 shape 会单独标注。</div>
+
+<h2>0. 先看一层到底做什么</h2>
+<p>K3 有 93 个 Transformer 层：23 次重复 <code>KDA → KDA → KDA → Gated MLA</code>，最后再加一个 Gated MLA。每个 attention 后配一个 channel mixer：第一层是 Dense MLP，其余约 92 层是 Stable LatentMoE。Block AttnRes 不替代 token mixer；它先在<strong>深度轴</strong>构造 attention 或 MLP 的输入。</p>
+<pre>embedding / 当前 block 部分和 / 已完成 block 表示
+    ↓ Block AttnRes，得到 [T, 7168]
+KDA 或 Gated MLA，得到 [T, 7168]
+    ↓ 再做一次 Block AttnRes，得到 [T, 7168]
+Dense MLP 或 Stable LatentMoE，得到 [T, 7168]
+    ↓ 输出进入当前深度 block 的部分和</pre>
+
+<div class="table-wrap"><table><tbody><tr><th>模块</th><th>核心真实维度</th><th>跨 decode step 保留什么</th><th>替代/修改了什么</th></tr>
+<tr><td>KDA</td><td>96 heads，head dim 128</td><td>每层卷积历史 + <code>[96,128,128]</code> 递归 state（按 TP 分片）</td><td>大部分全局 softmax attention</td></tr>
+<tr><td>Gated MLA</td><td>q latent 1536；KV latent 576；96 heads；qk 192；v 128</td><td>每层每 token 576 个 latent 元素</td><td>周期性全局 MHA，并增加输出门</td></tr>
+<tr><td>Block AttnRes</td><td>8 个深度 block；每个最多 12 层；hidden 7168</td><td>不跨 token 持久；只在当前 forward 内维护 block 表示</td><td>普通逐层相加的 residual stream</td></tr>
+<tr><td>Stable LatentMoE</td><td>7168→3584；896 选 16；expert hidden 3072；2 shared</td><td>不产生请求 cache</td><td>全宽 Dense FFN / 全宽 routed MoE</td></tr></tbody></table></div>
+
+<h2>1. KDA：完整计算链，而不只是一个递推式</h2>
+<h3>1.1 从 <code>X:[T,7168]</code> 生成六组量</h3>
+<p>对第 <code>t</code> 个 token、head <code>h</code>，KDA 需要 <code>q,k,v</code>、写强度 <code>β</code>、逐 key-channel 保留率 <code>α</code> 和输出门 <code>g²</code>。vLLM 把第一批投影打包成一个 GEMM：</p>
+<div class="equation">X [T,7168]
+  ├─ Wq,Wk,Wv → Qraw,Kraw,Vraw [T,96,128]
+  ├─ Wg        → G²            [T,96,128]
+  ├─ Wf_a      → F_a           [T,128]
+  └─ Wβ        → β_raw         [T,96]
+
+F_b = Wf_b(F_a)                [T,96,128]</div>
+<p>TP=8 时每 rank 有 12 heads：<code>Q/K/V/G²</code> 各为 <code>[T,12,128]</code>，<code>F_a:[T,128]</code> 被复制，<code>β:[T,12]</code>。生产 decode 的合并投影输出被对齐到 <code>[T,6288]</code>。</p>
+
+<h3>1.2 短卷积不是装饰，它也产生 cache</h3>
+<p><code>q/k/v</code> 各自先经过宽度 4 的 causal depthwise short convolution，再经过 Swish；<code>q/k</code> 还做 L2 normalization：</p>
+<div class="equation">q_t = L2Norm(Swish(ShortConv4(Qraw)_t))
+k_t = L2Norm(Swish(ShortConv4(Kraw)_t))
+v_t =         Swish(ShortConv4(Vraw)_t)</div>
+<p>所以 decode 下一步除了 <code>S_t</code>，还必须知道每个 Q/K/V channel 的最近 3 个输入。vLLM 的全局逻辑 shape 是 <code>[3×96×128, 3] = [36864,3]</code>；TP=8 是 <code>[4608,3]</code>。这正是“只说 KDA 有一个固定矩阵 state”会漏掉的实现事实。</p>
+
+<h3>1.3 decay、delta write 与读取</h3>
+<p>对单 head，<code>q_t,k_t,v_t∈R^128</code>，<code>S_t∈R^(128×128)</code>。K3 把 log-decay 限制在 <code>(-5,0)</code>：</p>
+<div class="equation">z_t = F_b[t,h,:] + learned bias
+g_t = -5 · Sigmoid(exp(A_h) · z_t)       ∈ (-5,0)^128
+α_t = exp(g_t)                            ∈ (exp(-5),1)^128
+β_t = Sigmoid(β_raw[t,h])                 ∈ (0,1)
+
+S̄_(t-1) = Diag(α_t) S_(t-1)
+S_t = S̄_(t-1) + β_t k_t (v_t - S̄_(t-1)^T k_t)^T
+õ_t = S_t^T q_t                           ∈ R^128</div>
+<p><code>v_t-S̄^Tk_t</code> 是“当前 state 对 key <code>k_t</code> 的预测误差”。外积写入的是这份误差，而不是盲目叠加 <code>k_tv_t^T</code>；因此重复 key 会修正旧关联。<code>Diag(α)</code> 又允许不同 key channel 以不同速度遗忘。</p>
+
+<h3>1.4 输出门与投影</h3>
+<div class="equation">u_t,h = Sigmoid(G²_t,h) ⊙ RMSNorm(õ_t,h)  [128]
+u_t = Concat_h(u_t,h)                       [96×128=12288]
+y_t = W_o u_t                               [7168]</div>
+<p>这叫 full-rank gate，因为 <code>G²</code> 直接从 7168 维输入投到所有 <code>96×128</code> 通道；它能按 token、head、channel 决定递归读出的哪些部分通过。</p>
+
+<h3>1.5 prefill 与 decode 为什么不是同一个 kernel</h3>
+<p>数学上 KDA 沿 token 递推；prefill 若真的逐 token 启动 kernel 会失去 GPU 并行性。K3 把序列切 chunk，chunk 内用因果下三角矩阵乘并行计算，chunk 间只传 <code>S</code>。vLLM 优先走 FlashKDA，fallback 是 <code>chunk_kda_with_fused_gate</code>。decode 每请求只有一个新 token，反而适合把 packed projection、conv update、KDA recurrence、head RMSNorm 和输出 gate 融合。</p>
+<div class="table-wrap"><table><tbody><tr><th></th><th>传统 MHA/GQA</th><th>KDA</th></tr><tr><td>请求状态</td><td>每层保存历史 token K/V，随长度线性增长</td><td>每层固定卷积历史和递归矩阵</td></tr><tr><td>decode 历史读取</td><td>读取历史 KV，随上下文增长</td><td>读取并原地更新固定 state</td></tr><tr><td>精确回看位置</td><td>强：query 可直接选择某个历史 token</td><td>弱：历史已压缩进 state</td></tr><tr><td>新增代价</td><td>KV 容量和带宽</td><td>递归依赖、state 恢复、spec rollback 更复杂</td></tr></tbody></table></div>
+
+<h2>2. Gated MLA：prefill 展开 K/V，decode 吸收投影</h2>
+<h3>2.1 前端投影与真实 shape</h3>
+<div class="equation">X [T,7168]
+  └─ fused_qkv_a_proj → [q_c | c] [T,1536+576=2112]
+
+q_c = RMSNorm(q_c)                         [T,1536]
+c   = RMSNorm(c)                           [T,576]   ← 写入 cache
+q   = W_QB q_c                             [T,96,192]
+[k_h;v_h] = W_KVB c                        [T,96,192+128]</div>
+<p>K3 的 MLA 层是 NoPE，所以 <code>qk_rope_head_dim=0</code>，cache entry 就是 576 维 <code>c_t</code>。普通 96-head MHA 若直接保存每头 192 维 K 和 128 维 V，每 token 每层是 <code>96×320=30720</code> 个元素；MLA 是 576 个，元素数约缩小 53.3 倍。与 GQA 比倍率会更小，所以文章不能把 53.3 倍写成对所有传统架构都成立。</p>
+
+<h3>2.2 prefill：为了并行 attention，临时展开</h3>
+<div class="equation">scores[t,h,j] = q[t,h] · k[j,h] / sqrt(192),  j≤t
+p[t,h,:] = Softmax(scores[t,h,:])
+õ[t,h] = Σ_j p[t,h,j] v[j,h]                [128]</div>
+<p>prefill 中 <code>K:[T,96,192]</code> 和 <code>V:[T,96,128]</code> 可以是临时张量，最终请求 cache 仍只保留 <code>c:[T,576]</code>。vLLM 的 fused epilogue 同时拼 key、插入 paged latent cache，并调用 prefill backend；chunked prefill 读取旧 latent page 后才临时做 <code>kv_b_proj</code>。</p>
+
+<h3>2.3 decode：把 <code>W_K</code> 和 <code>W_V</code> 吸收到两侧</h3>
+<p>令每头的 KV up-projection 拆为 <code>W_UK,h:[576,192]</code> 与 <code>W_UV,h:[576,128]</code>。原本分数是 <code>q_h(W_UK,h c_j)^T</code>，结合律允许先变换 query：</p>
+<div class="equation">q_latent,h = q_h W_UK,h^T                    [576]
+scores[h,j] = q_latent,h · c_j / sqrt(192)    [history]
+o_latent,h = Σ_j Softmax(scores[h,:])_j c_j   [576]
+õ_h = o_latent,h W_UV,h                       [128]</div>
+<p>这样 decode 不必为所有历史 token 重建 96 份 K/V。vLLM 中这两块预处理权重叫 <code>W_UK_T</code> 和 <code>W_UV</code>，decode 路径是 BMM1 → latent MQA → BMM2。</p>
+
+<h3>2.4 full-rank output gate</h3>
+<div class="equation">gate = Sigmoid(W_g X)                         [T,96,128]
+u = gate ⊙ õ                                   [T,96,128]
+y = W_o Flatten(u)                             [T,7168]</div>
+<p>相比 K2/K2.5 的 MLA，K3 取消所有 MLA RoPE，并增加这个输入相关的 channel gate。NoPE 避免 1M 扩展时重调 RoPE，但位置敏感性必须由相邻 KDA 的递推历史和训练数据承担；这是职责转移，不是“位置消失”。</p>
+
+<h2>3. Block AttnRes：在深度来源上做 softmax</h2>
+<p>普通 residual 只有 <code>h_(l+1)=h_l+f_l(h_l)</code>。早期层信息必须穿过单一累计向量。K3 把 93 层划成 8 个至多 12 层的 block，embedding 作为 <code>b_0</code>，已完成 block 的和为 <code>b_1...b_(n-1)</code>，当前 block 的部分和为 <code>p</code>。</p>
+<div class="equation">sources = [b_0,b_1,...,b_(n-1),p]            [T,R,7168]
+q_l = learned vector for this sublayer          [7168]
+score[t,r] = q_l^T RMSNorm(sources[t,r])         scalar
+a[t,:] = Softmax(score[t,:])                     [R]
+h_l[t] = Σ_r a[t,r] sources[t,r]                 [7168]</div>
+<p>vLLM 在每层 attention 前和 MLP 前各调用一次 <code>attn_res</code>，两次有独立的 7168 维打分权重；kernel 同时完成当前部分和的更新、必要的 block 写入、online softmax 混合与下一层 RMSNorm。buffer 是 <code>[T,num_blocks,7168]</code>。</p>
+<div class="callout warning"><strong>生命周期：</strong>AttnRes 的 <code>[T,R,7168]</code> 是当前模型 forward 的深度 activation。prefill 完整跑完后，它不会像 MLA latent 或 KDA state 那样留给下一个 decode token；新 token 会在穿过 93 层时重新建立自己的深度来源。</div>
+<p>优势是每层能直接选择早期深度表示，深度信息不再只能等权累加。代价是每个 token 要读取多个 7168 维 block source，并引入额外 softmax、buffer 和 TP 通信；Block 版只是把 full AttnRes 的 <code>O(Ld)</code> 活跃来源降为 <code>O(Nd)</code>，不是零成本。</p>
+
+<h2>4. Stable LatentMoE：router 看全宽，专家吃半宽</h2>
+<h3>4.1 两条并行路径</h3>
+<div class="equation">X [T,7168]
+ ├─ shared path: 2 个 shared experts，始终执行 → Y_shared [T,7168]
+ └─ routed path:
+      Z = X W_down                         [T,3584]
+      logits = X W_router                  [T,896] FP32
+      ids = Top16(Sigmoid(logits)+bias)    [T,16]
+      weights = normalize(Sigmoid(logits)[ids]) [T,16]
+      dispatch Z                           [T×16,3584]
+      896 个 expert 中只执行命中的 16 个
+      combine                              [T,3584]
+      RMSNorm → W_up                       [T,7168]
+
+Y = Y_shared + Y_routed                    [T,7168]</div>
+<p>关键细节：Quantile Balancing 训练出的 <code>bias:[896]</code> 只参与 Top-16 选择，不进入 mixture weight。vLLM 以 FP32 生成 router logits，并冻结使用 checkpoint 中的 <code>e_score_correction_bias</code>。</p>
+
+<h3>4.2 单个 routed expert 内部</h3>
+<div class="equation">z [3584]
+gate = W1 z     [3072]
+up   = W3 z     [3072]
+
+SiTU(gate,up) =
+  [4·tanh(gate/4)·sigmoid(gate)]
+  ⊙ [25·tanh(up/25)]              [3072]
+
+e = W2 SiTU(gate,up)              [3584]</div>
+<p>输出逐元素绝对值上界是 <code>4×25=100</code>。它解决的是 <code>W_down → expert 的两次输入投影 → W_up</code> 这条长矩阵链在 2.8T 规模下的 activation outlier。聚合后的 routed latent 在升回 7168 之前再做 RMSNorm。</p>
+<p>shared path 等价于把两个始终开启的全宽 expert 合并成一个中间宽度 <code>2×3072=6144</code> 的 MLP。它不经过 3584 latent bottleneck，用来承载所有 token 都需要的通用变换。</p>
+
+<h3>4.3 相比普通 MoE 到底省在哪里</h3>
+<div class="table-wrap"><table><tbody><tr><th></th><th>普通全宽 MoE</th><th>K3 Stable LatentMoE</th></tr><tr><td>router 输入</td><td>通常全宽</td><td>仍是 7168，全局语义不丢</td></tr><tr><td>dispatch 给专家</td><td>每次 7168 维</td><td>每次 3584 维，16 路通信约减半</td></tr><tr><td>专家输入/输出宽度</td><td>7168</td><td>3584</td></tr><tr><td>额外成本</td><td>无 latent 投影</td><td>每 token 多一次 7168→3584 和 3584→7168</td></tr><tr><td>稳定机制</td><td>常见 SwiGLU</td><td>RMSNorm + 有界 SiTU-GLU + QB bias</td></tr><tr><td>请求 cache</td><td>无</td><td>无；expert 权重属于模型常驻状态</td></tr></tbody></table></div>
+
+<h2>5. 把四个模块放回同一层</h2>
+<div class="trace"><div><code>AttnRes</code> 从 embedding、已完成深度 block 和当前部分和混合出 <code>[T,7168]</code>。</div><div>KDA 层更新 short-conv cache 与 <code>S</code>；MLA 层追加 <code>[T,576]</code> latent page。两者都输出 <code>[T,7168]</code>。</div><div>第二次 <code>AttnRes</code> 将 attention 输出纳入当前 block 部分和，再混合出 MoE 输入。</div><div>Stable LatentMoE 同时运行 shared path 和 top-16 routed path，合并为 <code>[T,7168]</code>。</div><div>MoE 输出不单独进 token cache，而是在下一层 AttnRes 中作为当前 block 的增量。</div></div>
+
+<div class="quiz" id="quiz" data-quiz=""><h2>检索练习</h2><p><strong>问题：</strong>MLA decode 为什么可以不为全部历史 token 重建 96 份 K/V？</p><button type="button" data-ok="true">把 KV up-projection 吸收到 query 与输出两侧，在 576 维 latent cache 上做 MQA</button><button type="button">把 96 个 attention head 永久平均成一个 head，只保存平均后的完整 value</button><button type="button">用 KDA 的 128×128 state 直接替换 MLA cache，因此 MLA decode 不再读取历史</button><p class="feedback" id="feedback" data-feedback="" aria-live="polite"></p></div>
+<p class="foot">主读物：<a href="https://github.com/MoonshotAI/Kimi-K3/blob/main/k3_tech_report.pdf">Kimi K3 Technical Report §2</a>。实现对照：<a href="https://github.com/vllm-project/vllm/tree/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3">vLLM Kimi K3 at f4b161d7</a>。下一课会让同一个请求逐步走过这些张量。速查：<a href="../reference/kimi-k3-tensor-shapes.html">核心 shape 与公式表</a>。任何一步不清楚，直接指出输入和输出，我会沿那条边继续展开。</p>
+</main><script>const buttons=document.querySelectorAll('#quiz button');const feedback=document.querySelector('#feedback');buttons.forEach((button)=>button.addEventListener('click',()=>{buttons.forEach((b)=>b.classList.remove('correct','wrong'));if(button.dataset.ok){button.classList.add('correct');feedback.textContent='正确：结合律允许 q 先乘 W_UK^T，latent attention 输出再乘 W_UV。';}else{button.classList.add('wrong');feedback.textContent='不对。MLA 仍然做全局 attention，只是把投影吸收到 attention 两侧。';}}));</script>
+</body></html>

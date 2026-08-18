@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kimi K3 核心公式与张量 shape 速查</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
+</nav><main class="wrap"><div class="kicker">Reference · Tensor shapes</div><h1>Kimi K3 核心公式与张量 shape 速查</h1>
+<p class="lede">生产 checkpoint 维度以 vLLM <code>f4b161d7</code> 的 Kimi K3 支持为实现证据。<code>T</code> 是当前调度轮 packed token 数；<code>B</code> 是 plain decode 请求数；主干宽度 <code>d=7168</code>。</p>
+
+<h2>整机</h2>
+<div class="table-wrap"><table><tbody><tr><th>项</th><th>值</th><th>说明</th></tr>
+<tr><td>层数</td><td>93</td><td>69 KDA + 24 Gated MLA；23×(3 KDA + 1 MLA) + final MLA</td></tr>
+<tr><td>AttnRes</td><td>block size 12，8 blocks</td><td>embedding 是额外深度来源；最后 block 不满 12 层</td></tr>
+<tr><td>MoE</td><td>896 routed，top-16，2 shared</td><td>routed latent 3584；expert intermediate 3072</td></tr>
+</tbody></table></div>
+
+<h2>KDA</h2>
+<div class="table-wrap"><table><tbody><tr><th>张量</th><th>全局逻辑 shape</th><th>TP=8 本地 shape</th></tr>
+<tr><td>输入/输出</td><td><code>[T,7168]</code></td><td><code>[T,7168]</code></td></tr>
+<tr><td>Q/K/V/G²</td><td><code>[T,96,128]</code></td><td><code>[T,12,128]</code></td></tr>
+<tr><td>F_a</td><td><code>[T,128]</code></td><td><code>[T,128]</code> replicated</td></tr>
+<tr><td>β / decay</td><td><code>[T,96]</code> / <code>[T,96,128]</code></td><td><code>[T,12]</code> / <code>[T,12,128]</code></td></tr>
+<tr><td>recurrent state</td><td><code>[96,128,128]</code></td><td><code>[12,128,128]</code></td></tr>
+<tr><td>Conv4 history</td><td><code>[3×96×128,3]=[36864,3]</code></td><td><code>[4608,3]</code></td></tr>
+<tr><td>o_proj 输入</td><td><code>[T,12288]</code></td><td>head-sharded，projection 后归并</td></tr></tbody></table></div>
+<div class="equation">S̄ = Diag(α_t) S_(t-1)
+S_t = S̄ + β_t k_t (v_t - S̄^T k_t)^T
+õ_t = S_t^T q_t
+y_t = W_o[Sigmoid(g²_t) ⊙ RMSNorm(õ_t)]</div>
+
+<h2>Gated MLA</h2>
+<div class="table-wrap"><table><tbody><tr><th>张量/维度</th><th>shape 或值</th><th>生命周期</th></tr>
+<tr><td>q LoRA latent</td><td><code>[T,1536]</code></td><td>当前 forward</td></tr>
+<tr><td>KV latent c</td><td><code>[T,576]</code></td><td>逐 token 写入请求 cache</td></tr>
+<tr><td>Q</td><td><code>[T,96,192]</code></td><td>当前 forward；NoPE，RoPE dim=0</td></tr>
+<tr><td>prefill K/V</td><td><code>[T,96,192]</code> / <code>[T,96,128]</code></td><td>临时展开</td></tr>
+<tr><td>decode q_latent</td><td><code>[B,96,576]</code></td><td>BMM1 临时量</td></tr>
+<tr><td>decode latent_out</td><td><code>[B,96,576]</code></td><td>latent MQA 临时量</td></tr>
+<tr><td>full-rank gate</td><td><code>[T,96,128]</code></td><td>当前 forward</td></tr></tbody></table></div>
+<div class="equation">[q_c;c] = X W_QKVA                    [T,1536+576]
+q = RMSNorm(q_c) W_QB                  [T,96,192]
+
+decode:
+q_latent,h = q_h W_UK,h^T              [576]
+o_latent,h = Softmax(q_latent,h C^T) C [576]
+o_h = o_latent,h W_UV,h                 [128]</div>
+
+<h2>Block AttnRes</h2>
+<div class="equation">sources                              [T,R,7168]
+score[t,r] = q_l^T RMSNorm(sources[t,r])
+a[t,:] = Softmax(score[t,:])             [R]
+h_l[t] = Σ_r a[t,r] sources[t,r]         [7168]</div>
+<p><code>R</code> 是深度来源数，不是序列长度。vLLM forward buffer 为 <code>[T,8,7168]</code>；attention 前和 MLP 前各有独立 score projection。它在当前 forward 内存在，不跨生成 token 持久化。</p>
+
+<h2>Stable LatentMoE</h2>
+<div class="table-wrap"><table><tbody><tr><th>步骤</th><th>shape</th></tr>
+<tr><td>router logits / top ids</td><td><code>[T,896]</code> FP32 / <code>[T,16]</code></td></tr>
+<tr><td>routed down</td><td><code>[T,7168]→[T,3584]</code></td></tr>
+<tr><td>逻辑 dispatch</td><td><code>[T×16,3584]</code></td></tr>
+<tr><td>expert gate/up</td><td>各 <code>[T×16,3072]</code></td></tr>
+<tr><td>combine / up</td><td><code>[T,3584]→[T,7168]</code></td></tr>
+<tr><td>shared path</td><td>两个 shared expert 合并为 intermediate 6144，输出 <code>[T,7168]</code></td></tr></tbody></table></div>
+<div class="equation">SiTU(g,u) = [4 tanh(g/4) sigmoid(g)] ⊙ [25 tanh(u/25)]
+Y = Y_shared + W_up RMSNorm(Combine(Top16Experts(W_down X)))</div>
+
+<h2>传统架构对照</h2>
+<div class="table-wrap"><table><tbody><tr><th>K3 模块</th><th>传统基线</th><th>主要收益</th><th>主要代价</th></tr>
+<tr><td>KDA</td><td>MHA/GQA KV cache</td><td>decode 历史 state 对长度 O(1)</td><td>历史有损压缩；递推、恢复、回滚复杂</td></tr>
+<tr><td>Gated MLA</td><td>每头完整 K/V</td><td>只缓存每 token 576 维 latent</td><td>仍随长度 O(T)；需 up-projection/权重吸收</td></tr>
+<tr><td>Block AttnRes</td><td>单一加法 residual stream</td><td>每层可选择深度来源</td><td>深度 buffer、softmax、读取和通信</td></tr>
+<tr><td>Stable LatentMoE</td><td>全宽 routed expert</td><td>expert 输入输出及 dispatch 宽度减半</td><td>新增 down/up 投影与稳定化机制</td></tr></tbody></table></div>
+<p class="foot">完整推导见<a href="../0001-kimi-k3-module-math/">第一课</a>；端到端时间线见<a href="../0002-kimi-k3-prefill-decode-vllm/">第二课</a>。实现证据固定到 <a href="https://github.com/vllm-project/vllm/tree/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3">vLLM f4b161d7</a>。</p>
+</main>
+</body></html>

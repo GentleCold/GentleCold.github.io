@@ -5,7 +5,7 @@ date: 2026-08-15 15:33
 tags: [Kimi K3, Moonshot AI, KDA, MLA, Attention Residuals, MoE, LLM, KV Cache]
 ---
 
-> 版本说明：本文基于Moonshot AI官方Kimi K3技术报告、官方仓库`3cb39df`（报告更新于2026-08-06）、官方技术博客和部署文档整理。架构、训练和系统数据来自官方报告；带有“估算”“推导”字样的内容是本文根据公开维度计算的结果。本文没有复现2.8T模型的训练、1M上下文评测或多机推理，官方benchmark也不应直接等同于跨厂商、同预算、同harness的独立比较。
+> 版本说明：本文基于Moonshot AI官方Kimi K3技术报告、官方仓库`3cb39df`（报告更新于2026-08-06）、官方技术博客和部署文档整理；张量shape与prefill/decode执行路径额外对照vLLM main提交`f4b161d7`（2026-08-18）。架构、训练和系统数据来自官方报告；标记为“vLLM实现”的内容是当前后端与checkpoint支持，不等于模型数学只允许这一种kernel；带有“估算”“教学示例”字样的内容则是本文推导。本文没有复现2.8T模型训练、1M上下文评测或多机推理。
 
 ## 1. 先说结论
 
@@ -38,7 +38,8 @@ Kimi K3不是简单地把Kimi K2放大到2.8T参数。它的核心思路是沿�
 | Transformer层 | 93 | 69层KDA + 24层Gated MLA |
 | Dense层 | 1 | 其余层使用MoE通道混合 |
 | 模型宽度 | 7168 | 主干hidden state维度$d$ |
-| Attention heads | 96 | 报告没有在摘要表中进一步给出全部head内部维度 |
+| Attention heads | 96 | vLLM实现中KDA head dim为128；MLA的QK/V head dim为192/128 |
+| MLA latent | Q 1536；KV 576 | MLA使用NoPE，KV cache每token每层保存576个latent元素 |
 | LatentMoE宽度 | 3584 | routed path只有主干宽度的一半 |
 | Expert hidden | 3072 | 每个expert的中间维度 |
 | Routed experts | 896 | 每层可选专家池 |
@@ -90,6 +91,30 @@ flowchart TD
 - AttnRes block是最多12个Transformer层，描述深度方向的信息聚合和缓存单位。
 
 不要把二者混为一谈。
+
+### 2.3 一层的真实数据流
+
+对任意一层，输入和输出都回到主干宽度7168，但中间并不是“attention加一个FFN”这么简单。Block AttnRes在attention前和MoE前各执行一次，而且两次使用独立的7168维打分向量：
+
+```text
+embedding / 已完成depth block / 当前block部分和
+  -> Block AttnRes                         [T,7168]
+  -> KDA或Gated MLA                        [T,7168]
+  -> 再一次Block AttnRes                    [T,7168]
+  -> Dense MLP或Stable LatentMoE            [T,7168]
+  -> 输出作为当前depth block的增量
+```
+
+这里的`T`是vLLM当前调度轮pack后的token总数，不一定能写成整齐的`batch × sequence`。下表先把生产checkpoint的关键shape放在一起，后文再逐项推导：
+
+| 模块 | 关键中间shape | 跨decode step保存什么 |
+|---|---|---|
+| KDA | Q/K/V/Gate `[T,96,128]`；state `[96,128,128]` | 每层的Conv4历史与最终recurrent state |
+| Gated MLA | Q latent 1536；KV latent 576；QK/V head dim 192/128 | 每层每token的576维latent page |
+| Block AttnRes | block bank `[T,8,7168]`，另有当前block prefix | 不保存；它是当前forward的深度activation |
+| Stable LatentMoE | router `[T,896]`；down `[T,3584]`；top-16 | 不保存请求cache；expert权重是模型常驻参数 |
+
+TP=8时，96个attention head被切为每rank 12个。本文凡是没有写TP的shape，默认描述全局逻辑张量；不能直接拿它乘dtype当作单卡显存。
 
 ## 3. KDA：把无限增长的历史变成固定大小的状态
 
@@ -152,24 +177,64 @@ $$
 
 delta rule的重要意义是“写入纠错”：如果当前$key$对应的内容已经被状态准确表示，就少写；如果预测错误，就沿$key$方向修正状态。
 
-### 3.3 K3怎样产生$q/k/v/\alpha/\beta$
+### 3.3 从`X:[T,7168]`走到KDA输出
 
-KDA不是只换了attention公式，它还给这些量设计了专门的数据路径：
+当前vLLM的K3 checkpoint支持给出了报告摘要表中没有展开的内部维度：96 heads，key/value head dim都是128，ShortConv kernel size为4。对一轮packed token输入$X\in\mathbb{R}^{T\times7168}$，第一批线性投影产生：
 
-- $q/k/v$先做线性投影、ShortConv和Swish。
-- $q/k$额外做L2 normalization，控制点积和递推尺度。
-- $\beta$由输入经过线性层和Sigmoid得到。
-- $\alpha$先通过低秩投影与head-specific bias得到逐channel logit，再映射成保留率。
-- 递推输出做head-wise RMSNorm，随后经过输入相关的full-rank gate。
+```text
+X [T,7168]
+  ├─ Wq,Wk,Wv → Qraw,Kraw,Vraw [T,96,128]
+  ├─ Wg        → G²             [T,96,128]
+  ├─ Wf_a      → F_a            [T,128]
+  └─ Wβ        → β_raw          [T,96]
 
-输出门为：
+F_b = Wf_b(F_a)                 [T,96,128]
+```
+
+TP=8时每个rank持有12 heads，所以`Q/K/V/G²`分别是`[T,12,128]`，$F_a$复制为`[T,128]`，$\beta_{raw}$为`[T,12]`。Q/K/V随后分别经过宽度4的causal depthwise convolution和Swish；Q/K再做L2 normalization：
 
 $$
-y_t=W_o\left[\mathrm{Sigmoid}(W_gx_t)\odot
-\mathrm{RMSNorm}(\tilde{o}_t)\right]
+q_t=\operatorname{L2Norm}(\operatorname{Swish}(\operatorname{Conv4}(Q^{raw})_t))
 $$
 
-相对Kimi Linear，K3把低秩输出门换成full-rank投影，让每个token能独立控制所有输出channel。
+$$
+k_t=\operatorname{L2Norm}(\operatorname{Swish}(\operatorname{Conv4}(K^{raw})_t)),\qquad
+v_t=\operatorname{Swish}(\operatorname{Conv4}(V^{raw})_t)
+$$
+
+这意味着请求cache不只有$S_t$。每个Q/K/V channel还要保留最近3个卷积输入：全局逻辑shape为
+
+$$
+[3\times96\times128,\ 3]=[36864,3]
+$$
+
+TP=8时每rank是`[4608,3]`。单head的recurrent state是`[128,128]`，全局96 heads为`[96,128,128]`，TP=8时每rank为`[12,128,128]`。
+
+decay与写入门的具体映射为：
+
+$$
+z_{t,h}=F_{b,t,h}+b_h
+$$
+
+$$
+g_{t,h}=-5\operatorname{Sigmoid}(e^{A_h}z_{t,h}),\qquad
+\alpha_{t,h}=e^{g_{t,h}},\qquad
+\beta_{t,h}=\operatorname{Sigmoid}(\beta^{raw}_{t,h})
+$$
+
+把这些量代入上一节的delta rule后，每head得到$\tilde{o}_{t,h}\in\mathbb{R}^{128}$。最后做head-wise RMSNorm、full-rank gate与输出投影：
+
+$$
+u_{t,h}=\operatorname{Sigmoid}(G^2_{t,h})\odot
+\operatorname{RMSNorm}(\tilde{o}_{t,h})\in\mathbb{R}^{128}
+$$
+
+$$
+u_t=\operatorname{Concat}_{h=1}^{96}u_{t,h}\in\mathbb{R}^{12288},\qquad
+y_t=W_ou_t\in\mathbb{R}^{7168}
+$$
+
+相对Kimi Linear，K3把低秩输出门换成full-rank投影，使每个token、head、channel都能独立控制递归读出的通过量。代价是这条投影本身更大，decode必须依靠packed projection与融合kernel减少访存和launch开销。
 
 ### 3.4 为什么要给decay设置下界
 
@@ -251,19 +316,32 @@ $$
 \approx L_{\text{KDA}}\times H\times d_k\times d_v\times \text{dtype bytes}
 $$
 
-报告没有在模型摘要表里公开足够的head内部维度，不能仅凭7168和96 heads准确计算每请求state字节数。工程上应避免把“常数状态”误解为“可以忽略的状态”。官方SGLang部署文档甚至直接把KDA state pool称为并发上限之一。
+官方报告摘要表没有列出head内部维度，但当前vLLM checkpoint支持显示$d_k=d_v=128$。即使如此，也不能只用全局shape直接宣称“每请求占多少GB”：真实字节数还依赖TP/PP、state dtype、对齐方式、page分配以及是否启用RecoverSSM。工程上应避免把“常数状态”误解为“可以忽略的状态”。
 
 ## 4. Gated MLA：周期性恢复全局内容检索
 
 ### 4.1 MLA缓存的不是完整多头K/V
 
-Multi-head Latent Attention先把token hidden state压缩为latent：
+Multi-head Latent Attention不是直接把7168维输入投成96份K/V。当前vLLM K3实现的前端投影为：
 
-$$
-c_t=W_cx_t
-$$
+```text
+X [T,7168]
+  └─ fused_qkv_a_proj → [q_c | c] [T,1536+576=2112]
 
-推理时缓存$c_t$，attention计算再通过up-projection恢复content key和value。相对为每个head分别缓存K/V，latent cache显著降低每token缓存大小。
+q_c = RMSNorm(q_c)                         [T,1536]
+c   = RMSNorm(c)                           [T,576]  ← 持久cache
+q   = W_QB q_c                             [T,96,192]
+[k_h;v_h] = W_KVB c                        [T,96,192+128]
+```
+
+所以K3的生产维度是`q_lora_rank=1536`、`kv_lora_rank=576`、`qk_nope_head_dim=192`、`qk_rope_head_dim=0`、`v_head_dim=128`。prefill可以临时物化
+
+```text
+K [T,96,192]
+V [T,96,128]
+```
+
+来运行并行causal attention，但持久cache只写`c:[T,576]`。若拿96-head完整MHA作为基线，它每token每层需保存$96\times(192+128)=30720$个K/V元素，而MLA保存576个，元素数约缩小53.3倍；与GQA等其他基线相比倍率会不同。
 
 K3的MLA与K2/K2.5有两个关键差异：
 
@@ -276,7 +354,35 @@ $$
 
 位置和近因信息主要由中间的KDA递推携带，MLA负责不受限的全局内容交互。没有RoPE也意味着扩展到1M时不需要重调RoPE base或使用YaRN插值。
 
-### 4.2 为什么不能全用KDA
+### 4.2 decode为什么不重建所有历史K/V
+
+令每个head的KV up-projection拆成
+
+$$
+W_{UK,h}\in\mathbb{R}^{576\times192},\qquad
+W_{UV,h}\in\mathbb{R}^{576\times128}
+$$
+
+原始分数$q_h(W_{UK,h}c_j)^\top$可以利用矩阵结合律把$W_{UK}$吸收到query侧，把$W_{UV}$放到attention输出侧：
+
+$$
+q^{latent}_h=q_hW_{UK,h}^{\top}\in\mathbb{R}^{576}
+$$
+
+$$
+a_{h,j}=\operatorname{Softmax}_j\left(
+\frac{q^{latent}_hc_j^\top}{\sqrt{192}}
+\right)
+$$
+
+$$
+o^{latent}_h=\sum_ja_{h,j}c_j\in\mathbb{R}^{576},\qquad
+\tilde{o}_h=o^{latent}_hW_{UV,h}\in\mathbb{R}^{128}
+$$
+
+vLLM在模型加载后的weight processing阶段准备`W_UK_T`和`W_UV`。plain decode的数据流是BMM1把`[B,96,192]` query变成`[B,96,576]`，在paged latent cache上做MQA，再用BMM2升回`[B,96,128]`。这样不会为所有历史token临时展开96份K/V。
+
+### 4.3 为什么不能全用KDA
 
 固定大小$S_t$必然是对历史的有损压缩。序列越长，需要被同一个状态表达的事实、代码符号、视觉元素和工具轨迹越多。递推模型擅长持续更新和局部/近因模式，但很难保证任意早期细节都能按内容精确取回。
 
@@ -303,7 +409,7 @@ flowchart LR
     K6 --> M2[MLA: 再次全局校正]
 ```
 
-### 4.3 训练kernel里的一个精度细节
+### 4.4 训练kernel里的一个精度细节
 
 报告指出，FlashAttention存在有偏舍入误差，因此K3训练时把attention output保留为FP32。FP32输出tile会把片上空间翻倍，官方kernel没有简单接受这个成本，而是让输出tile与KV staging buffer重叠复用shared memory，释放空间以加深KV pipeline。
 
@@ -365,6 +471,26 @@ flowchart LR
     A --> L[当前层输入]
 ```
 
+对当前token，把已提交的depth block与当前block的running prefix记为
+
+$$
+R_t=[b_{t,0},b_{t,1},\ldots,b_{t,n-1},p_t]
+\in\mathbb{R}^{(n+1)\times7168}
+$$
+
+第$l$个子层用自己的学习向量$q_l\in\mathbb{R}^{7168}$打分：
+
+$$
+s_{t,r}=q_l^\top\operatorname{RMSNorm}(R_{t,r}),\qquad
+a_{t,:}=\operatorname{Softmax}(s_{t,:})
+$$
+
+$$
+h_{t,l}=\sum_{r=0}^{n}a_{t,r}R_{t,r}\in\mathbb{R}^{7168}
+$$
+
+vLLM在每层attention前和MLP前各调用一次`attn_res`，两次各有一个7168维score projection。其block bank分配为`[T,8,7168]`，当前block prefix单独为`[T,7168]`；kernel把prefix delta更新、必要的block写入、online softmax混合以及下一步RMSNorm尽量融合。
+
 这样把保存与通信开销从$O(Ld)$降为$O(Nd)$。K3采用8个最多12层的block，加上embedding一共9个来源。block内的顺序部分和与block间的并行attention用online softmax合并。
 
 推理实现也围绕内存流量优化：
@@ -374,6 +500,8 @@ flowchart LR
 - intra-block合并、partial-sum更新和后续RMSNorm融合进前一个TP all-reduce。
 
 AttnRes不是“免费跳连”。它用更直接的深度检索换来额外activation状态、内存读取和并行实现复杂度。
+
+还有一个很容易写错的生命周期：AttnRes bank只属于当前forward。prefill的`[T,8,7168]`在93层之间传递，forward完成后不会像MLA latent或KDA state那样留给下一个decode token；新token会在重新穿过93层时建立自己的depth bank。AttnRes解决的是层深方向的信息路由，不是token时间轴上的历史cache。
 
 ## 6. Stable LatentMoE：896个专家为什么还能选16个
 
@@ -402,6 +530,26 @@ y=\sum_{j=1}^{2}E_j^{\text{shared}}(x)
 $$
 
 先降到一半宽度，top-16才不会把16份7168维通信和expert计算直接压到系统上。
+
+把这一层按真实shape展开：
+
+```text
+X                                     [T,7168]
+├─ router logits（FP32）               [T,896]
+│  └─ Top-16 ids / normalized weights  [T,16] / [T,16]
+├─ shared experts                      [T,7168]
+└─ W_down                              [T,3584]
+   └─ dispatch到16个expert，逻辑shape   [T×16,3584]
+      ├─ expert gate/up                 [T×16,3072] 各一份
+      ├─ SiTU-GLU                       [T×16,3072]
+      └─ expert down                    [T×16,3584]
+   └─ weighted combine                 [T,3584]
+   └─ RMSNorm + W_up                   [T,7168]
+
+Y = Y_shared + Y_routed                [T,7168]
+```
+
+shared path中的两个always-on expert可合并为中间宽度$2\times3072=6144$的全宽MLP。它不经过3584维bottleneck，负责所有token都需要的通用变换；router仍读取7168维$X$，只有被派发给routed expert的数据降到3584维。
 
 ### 6.2 2.8T参数主要在哪里
 
@@ -622,9 +770,172 @@ K3预训练包含一个结构类似backbone block的MTP层。后训练时把它�
 
 官方推理kernel不为每个draft位置复制整份KDA state，而是缓存更小的projected input。验证后，在片上重放被接受token，重建正确state，并把verified token和bonus token的state写回。短卷积、输入归一化、gate、KDA recurrence和输出归一化被融合进同一个recurrent kernel。
 
-## 10. 推理系统真正要管理两种cache
+## 10. 一个请求完整走过prefill与decode
 
-### 10.1 KDA state与MLA KV不能用同一语义
+前面把模块拆开看过，下面用一个教学请求把它们重新接起来。设prompt已经tokenize为`[A,B,C,D]`，本例只有一个请求，不启用speculative decoding。字母只是token占位符，真实词表仍有160K项。
+
+### 10.1 先把时间轴对齐
+
+```text
+prefill输入: [A,B,C,D]
+模型最后位置输出: logits_D [160000]
+采样器: E ~ Softmax(logits_D / temperature)
+
+第一次decode输入: [E]
+模型输出: logits_E [160000]
+采样器: F ~ Softmax(logits_E / temperature)
+```
+
+所以prefill已经给出了第一个生成token $E$ 的概率分布。第一次decode消费$E$并给出$F$的分布。prefill刚采样出$E$时，cache仍然只包含`A...D`；只有下一轮把$E$喂回模型，$E$才进入KDA和MLA cache。
+
+### 10.2 Prefill入口与AttnRes初始化
+
+vLLM会把同一调度轮的token pack到第一维。本例只有一个长度4的请求，因此：
+
+```text
+input_ids                            [4]
+embedding lookup                     [4,7168]
+AttnRes block bank                   [4,8,7168]
+current block prefix                 [4,7168]
+positions/query_start_loc/slot map   metadata
+```
+
+block bank和prefix在当前93层forward内流转，但不是请求的长期cache。
+
+### 10.3 Prefill经过一个KDA层
+
+假设当前层输入为$X\in\mathbb{R}^{4\times7168}$：
+
+```text
+AttnRes(X)                            [4,7168]
+Qraw/Kraw/Vraw/G²                     [4,96,128]
+F_a / β_raw                           [4,128] / [4,96]
+Conv4 + Swish后的q/k/v                [4,96,128]
+逐channel decay α                     [4,96,128]
+```
+
+数学上每个head仍按顺序前进：
+
+$$
+S_0\xrightarrow{A}S_A\xrightarrow{B}S_B
+\xrightarrow{C}S_C\xrightarrow{D}S_D
+$$
+
+FlashKDA或chunk fallback把chunk内可改写的token交互并行化，最后只把$S_D$写回请求的该层state slot。prefill结束后，这一层持久保留：
+
+- recurrent state：全局逻辑`[96,128,128]`，TP=8每rank`[12,128,128]`；
+- Q/K/V Conv4最近3项：全局`[36864,3]`，TP=8每rank`[4608,3]`。
+
+四个位置的Q/K/V、decay和attention输出都是临时张量，不会各自作为历史记录留下。相同过程在69个KDA层独立发生。
+
+### 10.4 Prefill经过一个Gated MLA层
+
+```text
+X                                      [4,7168]
+fused_qkv_a_proj → [q_c | c]           [4,2112]
+q_c / c after RMSNorm                  [4,1536] / [4,576]
+Q                                      [4,96,192]
+临时展开K / V                           [4,96,192] / [4,96,128]
+causal scores                          [96,4,4]
+head output + full-rank gate           [4,96,128]
+o_proj                                 [4,7168]
+```
+
+第D个位置可看`A...D`，第A个位置只能看A。临时K/V在prefill attention完成后即可释放；该MLA层的paged cache只提交四个576维latent：
+
+$$
+C^{(l)}=[c_A^{(l)},c_B^{(l)},c_C^{(l)},c_D^{(l)}]
+\in\mathbb{R}^{4\times576}
+$$
+
+上标$(l)$很重要：24个MLA层各自拥有数值不同的latent序列，不能共享同一份$c$。
+
+### 10.5 每层的AttnRes与LatentMoE发生什么
+
+attention输出后，第二次AttnRes把它加入当前block prefix，并对已完成block与新prefix做深度softmax，生成MoE输入`[4,7168]`。随后：
+
+```text
+router logits                         [4,896] FP32
+top ids / weights                     [4,16] / [4,16]
+routed down                           [4,3584]
+dispatch逻辑输入                       [4×16,3584]
+expert gate/up                        [4×16,3072] 各一份
+combine + norm + up                   [4,3584] → [4,7168]
+shared path                           [4,7168]
+```
+
+router logits、expert activation与combine workspace用完即释放。MoE不会产生请求cache；下一个token会重新计算路由，可能选中完全不同的16个expert。
+
+### 10.6 Prefill结束、采样E之前和之后
+
+第92层是最终Gated MLA。最终AttnRes与RMSNorm输出`[4,7168]`，LM head逻辑上可产生`[4,160000]`；生成只需要D位置的`[160000]` logits。采样器从这个分布得到E。
+
+此时请求的持久状态快照是：
+
+| 持久项 | 每层/每请求逻辑内容 | 组数 | 当前历史边界 |
+|---|---|---:|---|
+| KDA recurrent state | `[96,128,128]`；TP=8每rank`[12,128,128]` | 69层 | A...D |
+| KDA Conv4 history | Q/K/V各通道最近3项 | 69层 | 可继续计算E |
+| MLA latent pages | 每token 576维 | 24层 | 每层各有`[c_A...c_D]` |
+| cache metadata | request length=4、block table、slot mapping | 请求级 | E将写逻辑位置4 |
+
+AttnRes bank、Q/K/V、router、expert activation和logits均不在这张持久表里。实际state字节数需要显式给出TP、dtype、page与对齐假设，不能从逻辑shape直接下结论。
+
+### 10.7 第一次plain decode消费E
+
+E先查embedding得到`[1,7168]`，然后仍然从第0层走到第92层。“decode只算一个token”不等于“只算一层”。
+
+在每个KDA层，kernel读取该层截至D的conv history和$S_D$，计算E的Q/K/V、decay、write gate与output gate：
+
+$$
+\bar{S}_D=\operatorname{Diag}(\alpha_E)S_D
+$$
+
+$$
+S_E=\bar{S}_D+\beta_Ek_E(v_E-\bar{S}_D^\top k_E)^\top,qquad
+o_E=S_E^\top q_E
+$$
+
+然后原地写回$S_E$，Conv4 history丢掉最老的一项并追加E。vLLM的plain decode走fused conv update + recurrent KDA路径，单步不随`A...D`长度增长。
+
+在每个MLA层，先生成`q_E:[1,96,192]`和`c_E:[1,576]`，把$c_E$插入本层page，再通过吸收权重查询`[c_A...c_E]`：
+
+```text
+BMM1: q_E → q_latent                   [1,96,576]
+latent MQA scores                      [1,96,5]
+latent attention output                [1,96,576]
+BMM2: W_UV up-projection               [1,96,128]
+gate + o_proj                          [1,7168]
+```
+
+E在自己的93层forward中还会重新创建`[1,8,7168]` AttnRes bank，并重新产生`[1,896]` router logits；它们都不读取A到D的同类临时量。跨token历史只由KDA state和MLA latent传入。
+
+最终LM head给出`logits_E:[160000]`，采样得到F。此刻cache包含`A...E`，还不包含F。下一轮decode消费F并产生G的分布。
+
+| 时刻 | 本轮模型输入 | 提交后的cache | 模型分布 | 随后采样 |
+|---|---|---|---|---|
+| prefill | A,B,C,D | A...D | $p(\cdot\mid A...D)$ | E |
+| decode #1 | E | A...E | $p(\cdot\mid A...E)$ | F |
+| decode #2 | F | A...F | $p(\cdot\mid A...F)$ | G |
+
+### 10.8 vLLM源码怎样对应这些步骤
+
+以下文件固定到提交`f4b161d7`，避免main分支继续变化后行文失去对应关系：
+
+| 文件 | 对应职责 |
+|---|---|
+| `vllm/models/kimi_k3/nvidia/model.py` | 93层骨干、两次AttnRes、Stable LatentMoE、最终depth聚合 |
+| `vllm/models/kimi_k3/nvidia/kda.py` | packed projection、prefill/plain decode/spec分派、conv与recurrent state写回 |
+| `vllm/models/kimi_k3/nvidia/kda_metadata.py` | 请求边界、state index、prefill/decode/spec token重排metadata |
+| `vllm/models/kimi_k3/nvidia/mla.py` | prefill latent展开、cache insert、decode的`W_UK_T/W_UV`吸收路径 |
+| `vllm/models/kimi_k3/nvidia/ops/attn_res.py` | prefix更新、block写入、depth softmax与output norm融合 |
+| `vllm/models/kimi_k3/nvidia/latent_moe_runner.py` | latent routed expert执行与tail调度 |
+
+同一scheduler batch可以混合chunked prefill、plain decode和spec token。Python层保持统一packed token流，metadata把token分组后交给不同kernel，再写回原顺序。这个分派属于vLLM后端工程，不是K3数学额外定义了第三种attention。
+
+## 11. 推理系统真正要管理两种cache
+
+### 11.1 KDA state与MLA KV不能用同一语义
 
 | 属性 | KDA cache | MLA cache |
 |---|---|---|
@@ -644,7 +955,7 @@ K3官方实现没有因此写两套allocator，而是统一**物理管理**、�
 
 统一pool不是把KDA伪装成普通KV，而是让两种page共享生命周期基础设施。
 
-### 10.2 为什么物理block和hash block必须解耦
+### 11.2 为什么物理block和hash block必须解耦
 
 KDA checkpoint很大，不能每几个token保存一次。官方物理block因此可能覆盖1024到6144 token。如果prefix hash也被迫使用同样粒度，会产生严重浪费：
 
@@ -677,7 +988,7 @@ flowchart TD
     W --> F[从token 2560继续prefill]
 ```
 
-### 10.3 并发一致性约束
+### 11.3 并发一致性约束
 
 当一个partial block既是共享cache entry，又是某请求的增长点时，会出现三个实际故障模式：
 
@@ -687,9 +998,9 @@ flowchart TD
 
 这也是为什么“统一一个cache key，然后每层自己尽力命中”会产生静默错误。混合attention模型的prefix hit是一个跨cache-group事务。
 
-## 11. 从kernel到集群：架构决定系统形状
+## 12. 从kernel到集群：架构决定系统形状
 
-### 11.1 KDA kernel分三个regime
+### 12.1 KDA kernel分三个regime
 
 | Regime | 主要矛盾 | K3方案 |
 |---|---|---|
@@ -697,7 +1008,7 @@ flowchart TD
 | 超长prefill | TP只切head，单rank head少时SM空闲 | 单卡SM级context parallel切sequence segment |
 | decode/spec decode | state每步原地更新，拒绝draft难回滚 | 缓存projected input并片上replay |
 
-### 11.2 Stable LatentMoE kernel
+### 12.2 Stable LatentMoE kernel
 
 官方实现针对latent path做了三项融合：
 
@@ -707,7 +1018,7 @@ flowchart TD
 
 小batch decode时，expert group GEMM接近“流式读权重”的memory-bound问题。K3使用基于WarpDecode的token-centric kernel：每个warp负责一个output neuron，lane team分别处理不同expert，最后warp-wide reduction；权重还会离线重排，减少runtime dequantization成本。
 
-### 11.3 1M agent负载需要cache affinity
+### 12.3 1M agent负载需要cache affinity
 
 报告给出的典型coding请求是：已有400K token prefix，新一轮只增加4K token。此时prefix miss要重算400K，成本相对hit不是小幅波动，而是数量级差异。
 
@@ -719,7 +1030,7 @@ flowchart TD
 
 这说明1M模型的生产调度单位不能只是“一个request”。session prefix的驻留位置已经成为路由状态。
 
-## 12. K3相对K2到底改变了什么
+## 13. K3相对K2到底改变了什么
 
 | 项目 | Kimi K2 | Kimi K3 | 主要代价/收益 |
 |---|---:|---:|---|
@@ -738,7 +1049,7 @@ flowchart TD
 
 K3保持7168主干宽度，却同时增加层数、head数、expert池、top-k、shared expert和上下文。这种shape说明扩展重点不是简单“把每层做宽”，而是让token、layer、expert三个轴都拥有更强、但更稀疏或更可压缩的信息通道。
 
-## 13. 怎样正确理解2.5× scaling efficiency
+## 14. 怎样正确理解2.5× scaling efficiency
 
 官方在held-out OOD validation data上重新搜索batch size、learning rate、tokens-per-parameter ratio和model shape，并为cosine decay与WSD分别寻找最优超参数。拟合结果显示，K3 family达到相同validation loss所需FLOPs约为K2 family的1/2.5。
 
@@ -756,17 +1067,17 @@ K3保持7168主干宽度，却同时增加层数、head数、expert池、top-k�
 
 > 在Moonshot针对K2与K3模型族拟合的训练缩放律中，K3整套架构、数据和训练方案在相同验证损失下约节省2.5倍训练FLOPs。
 
-## 14. 架构的真实代价与边界
+## 15. 架构的真实代价与边界
 
-### 14.1 KDA是压缩，不是无损记忆
+### 15.1 KDA是压缩，不是无损记忆
 
 固定大小state不可能无损容纳无限历史。周期性MLA正是对此的补偿。实际1M recall还取决于训练数据、任务分布、global layer密度和上下文管理，不能从context window数字直接推出。
 
-### 14.2 混合attention让runtime更复杂
+### 15.2 混合attention让runtime更复杂
 
-普通Transformer主要管理一种KV Cache；K3同时管理KDA running state、KDA checkpoint、MLA latent pages、AttnRes block representation和spec decode projected input。统一allocator可以减少重复代码，但一致性、回收、P/D传输和回滚语义更难。
+普通Transformer主要管理一种KV Cache；K3请求长期状态同时包含KDA running state/checkpoint与MLA latent pages，spec decode还可能增加恢复记录；AttnRes block representation则是每次forward内的临时activation。即便allocator复用物理管理，一致性、回收、P/D传输和回滚语义仍然更难。
 
-### 14.3 2.8T open weight仍是重型集群模型
+### 15.3 2.8T open weight仍是重型集群模型
 
 MXFP4只显著降低expert权重内存，并没有消除：
 
@@ -778,21 +1089,21 @@ MXFP4只显著降低expert权重内存，并没有消除：
 
 它不是普通工作站或少量消费卡的实用本地模型。
 
-### 14.4 Benchmark高度依赖harness和budget
+### 15.4 Benchmark高度依赖harness和budget
 
 官方表格混用了Kimi Code、Claude Code、Codex等harness，不同模型还可能采用不同reasoning effort、fallback和工具配置。报告已给出很多脚注，但headline score仍不能脱离评测协议单独比较。
 
-### 14.5 Preserved thinking history是产品契约
+### 15.5 Preserved thinking history是产品契约
 
 K3后训练采用保留思考历史模式。多轮对话和tool call需要把API返回的完整assistant message原样带回，包括`reasoning_content`与`tool_calls`。中途从另一个模型切换到K3，或丢弃历史reasoning，官方称生成质量可能高度不稳定。
 
 这不是模型矩阵结构的一部分，却是架构能力能否在agent harness里正确工作的接口约束。
 
-### 14.6 许可证不是标准MIT/Apache 2.0
+### 15.6 许可证不是标准MIT/Apache 2.0
 
 Kimi K3 License允许使用、修改、分发、微调和创建衍生作品，但包含额外条件：特定收入规模的Model-as-a-Service商业使用需要另行与Moonshot签约；达到特定月活或月收入门槛的商业产品需要显著展示“Kimi K3”。部署前应读原始许可证，不能只把它归类成“开源模型所以可无限制商用”。
 
-## 15. 最后总结
+## 16. 最后总结
 
 理解Kimi K3，可以记住四个互相咬合的设计：
 
@@ -815,5 +1126,6 @@ MoonViT-V2、Per-Head Muon、MXFP4 QAT、MoonEP、KDA-aware prefix cache和fleet
 - FlashKDA：https://github.com/MoonshotAI/FlashKDA
 - Attention Residuals论文：https://arxiv.org/abs/2602.10604
 - MoonEP：https://github.com/MoonshotAI/MoonEP
+- vLLM Kimi K3实现（本文shape与推理路径固定到`f4b161d7`）：https://github.com/vllm-project/vllm/tree/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3
 - vLLM Kimi K3 recipe：https://recipes.vllm.ai/moonshotai/Kimi-K3
 - SGLang Kimi K3 cookbook：https://docs.sglang.io/cookbook/autoregressive/Moonshotai/Kimi-K3

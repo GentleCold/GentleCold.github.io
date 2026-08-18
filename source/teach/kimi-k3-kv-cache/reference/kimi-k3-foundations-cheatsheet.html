@@ -1,9 +1,0 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kimi K3 基础概念速查</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="/teach/teach-shell.css"></head>
-<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
-  <a class="teach-publish-link" href="/teach/">Teach</a>
-  <span class="teach-publish-separator" aria-hidden="true">/</span>
-  <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
-</nav><main class="wrap"><div class="kicker">Reference</div><h1>Kimi K3 基础概念速查</h1><p class="lede">先用这张表建立词汇，再回到架构图。每个词都回答“它是什么”，而不是先回答“它怎么优化”。</p>
-<table><tbody><tr><th>词</th><th>直觉</th><th>在 K3 中的角色</th></tr><tr><td>Dense FFN</td><td>每个 token 都经过同一组大参数变换。</td><td>提供所有 token 都需要的通用能力。</td></tr><tr><td>MoE</td><td>把一个大 FFN 拆成许多专家，由 router 选择少数几个。</td><td>扩大参数容量，同时控制每个 token 的计算量。</td></tr><tr><td>Latent</td><td>把高维表示压到更窄的中间空间。</td><td>让 routed experts 在较小宽度上做专门变换。</td></tr><tr><td>LatentMoE</td><td>共享专家走完整宽度，路由专家先降维、在 latent 宽度工作，再升维。</td><td>让 896 个专家、每 token 激活 16 个变得更可扩展。</td></tr><tr><td>普通 Attention</td><td>当前 query 直接查看历史 token 的 K/V。</td><td>全局内容访问强，但历史 K/V 会随序列长度增长。</td></tr><tr><td>KDA</td><td>把历史持续折叠进一个递归 state，当前 query 读取这个 state。</td><td>用线性/递归路径承担长上下文 token mixing。</td></tr><tr><td>Gated MLA</td><td>保存压缩 latent，需要时重建 K/V 做全局 attention。</td><td>周期性补充不受限的全局内容交互。</td></tr></tbody></table>
-<p class="foot">主来源：<a href="https://github.com/MoonshotAI/Kimi-K3/blob/main/k3_tech_report.pdf">Kimi K3 Technical Report，第 2 节</a>。术语解释先追求正确心智模型，具体 kernel layout 以后再学。</p></main>
-</body></html>

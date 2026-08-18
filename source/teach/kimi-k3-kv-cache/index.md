@@ -8,5 +8,5 @@ permalink: /teach/kimi-k3-kv-cache/
 
 ## 课程目录
 
-- [第一课：Kimi K3 不是一种 Cache](/teach/kimi-k3-kv-cache/0001-kimi-k3-architecture/)
-- [第二课：先搞懂 LatentMoE 和 KDA](/teach/kimi-k3-kv-cache/0002-latent-moe-and-kda-basics/)
+- [第一课：Kimi K3 四个核心模块的公式与真实张量流](/teach/kimi-k3-kv-cache/0001-kimi-k3-module-math/)
+- [第二课：一个请求走完 Kimi K3 的 prefill 与 decode](/teach/kimi-k3-kv-cache/0002-kimi-k3-prefill-decode-vllm/)

@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kimi K3 vLLM 推理状态台账</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach reference navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
+</nav><main class="wrap"><div class="kicker">Reference · Runtime ledger</div><h1>Kimi K3 vLLM 推理状态台账</h1>
+<p class="lede">当输出不对、cache 命中异常或 speculative decode 回滚失败时，用这张表先确认“谁拥有它、什么时候写、下一步谁读”。版本固定到 vLLM <code>f4b161d7</code>。</p>
+
+<h2>请求持久状态</h2>
+<div class="table-wrap"><table><tbody><tr><th>状态</th><th>所有者</th><th>prefill 写入</th><th>plain decode</th><th>随长度增长</th></tr>
+<tr><td>KDA recurrent state</td><td>请求 × KDA 层 × TP rank</td><td>保存 prompt 末尾 state</td><td>读取后原地前进一步</td><td>否</td></tr>
+<tr><td>KDA Conv4 state</td><td>请求 × KDA 层 × TP rank</td><td>保存 Q/K/V 最近 3 项</td><td>shift 并追加新输入</td><td>否</td></tr>
+<tr><td>MLA latent KV</td><td>请求 × MLA 层 × token/page</td><td>每 prompt token 写 576 维 latent</td><td>追加一项并查询全部可见页</td><td>是，O(T)</td></tr>
+<tr><td>prefix/cache metadata</td><td>请求/调度器</td><td>建立长度、hash、page 与 slot 映射</td><td>长度 +1，分配/复用 slot</td><td>按 block/page</td></tr>
+<tr><td>RecoverSSM 记录</td><td>spec 请求 × KDA 层</td><td>通常不需要</td><td>仅启用对应 speculative 路径时使用</td><td>依配置与 draft 长度</td></tr></tbody></table></div>
+
+<h2>只在当前 forward 内存在</h2>
+<div class="table-wrap"><table><tbody><tr><th>临时量</th><th>典型 shape</th><th>最后消费者</th><th>为何不能算作 cache</th></tr>
+<tr><td>AttnRes buffer</td><td><code>[T,8,7168]</code></td><td>最终深度聚合</td><td>新 token 会重建自己的深度来源</td></tr>
+<tr><td>KDA Q/K/V/decay/gate</td><td><code>[T,96,128]</code> 等</td><td>KDA core/output projection</td><td>只把最终 recurrent/conv state 提交</td></tr>
+<tr><td>MLA prefill K/V</td><td><code>[T,96,192]</code>/<code>[T,96,128]</code></td><td>prefill attention</td><td>持久页只存 <code>[T,576]</code> latent</td></tr>
+<tr><td>router logits</td><td><code>[T,896]</code> FP32</td><td>Top-16 routing</td><td>下一 token 重新路由</td></tr>
+<tr><td>expert activation</td><td><code>[T×16,3584/3072]</code></td><td>combine</td><td>属于本层 channel mixing workspace</td></tr>
+<tr><td>LM logits</td><td>选中位置 <code>[N,160000]</code></td><td>sampler</td><td>采样后无需作为模型历史读取</td></tr></tbody></table></div>
+
+<h2>prefill / decode 分派</h2>
+<div class="table-wrap"><table><tbody><tr><th>模块</th><th>prefill</th><th>plain decode</th></tr>
+<tr><td>KDA</td><td>ShortConv + FlashKDA 或 chunk fallback；提交末尾 state</td><td>fused conv update + recurrent KDA + norm/gate；原地提交</td></tr>
+<tr><td>MLA</td><td>临时展开 K/V，运行 causal attention，latent 插页</td><td><code>W_UK_T</code> BMM1 → latent MQA → <code>W_UV</code> BMM2</td></tr>
+<tr><td>AttnRes</td><td>buffer 第一维覆盖所有 packed prompt token</td><td>只为本轮 decode token 建 buffer</td></tr>
+<tr><td>LatentMoE</td><td>按所有 packed token 路由</td><td>按当前 decode token 路由；小 batch 更偏 memory-bound</td></tr></tbody></table></div>
+
+<h2>一个 token 的提交边界</h2>
+<div class="trace"><div>调度器确定本轮输入 token 和其逻辑位置，准备 KDA state index 与 MLA slot mapping。</div><div>token 穿过全部 93 层；每个 KDA 层更新自己的 state，每个 MLA 层追加自己的 latent。</div><div>临时 AttnRes、Q/K/V、router 和 expert workspace 在相应消费者完成后可复用。</div><div>最终 hidden 进入 LM head；sampler 从 logits 选出下一个 token。</div><div>新采样 token 尚未进 cache，必须作为下一轮输入再次完成上述流程。</div></div>
+
+<h2>排错不变量</h2>
+<div class="callout"><strong>不变量 1：</strong>同一请求提交到所有 69 个 KDA cache group 的逻辑长度必须一致；不能让某层停在 D、另一层已经到 E。</div>
+<div class="callout"><strong>不变量 2：</strong>同一请求的 24 个 MLA 层各有独立 latent page 序列；它们 shape 相同但数值和权重空间不同。</div>
+<div class="callout"><strong>不变量 3：</strong>prefill 采样出 E 后，cache 仍截止 D；只有消费 E 的 decode forward 才提交 E。</div>
+<div class="callout warning"><strong>不变量 4：</strong>speculative 验证拒绝 suffix 时，KDA state 必须恢复到最后接受 token 的边界；不能只回收 MLA slots。</div>
+
+<p class="foot">逐步示例见<a href="../0002-kimi-k3-prefill-decode-vllm/">第二课</a>。源码入口：<a href="https://github.com/vllm-project/vllm/blob/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3/nvidia/kda.py">kda.py</a>、<a href="https://github.com/vllm-project/vllm/blob/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3/nvidia/mla.py">mla.py</a>、<a href="https://github.com/vllm-project/vllm/blob/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3/nvidia/model.py">model.py</a>。</p>
+</main>
+</body></html>

@@ -1,0 +1,169 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>第二课：一个请求走完 Kimi K3 的 prefill 与 decode</title><link rel="stylesheet" href="../assets/style.css"><link rel="stylesheet" href="/teach/teach-shell.css"></head>
+<body><nav class="teach-publish-nav" aria-label="Teach lesson navigation">
+  <a class="teach-publish-link" href="/teach/">Teach</a>
+  <span class="teach-publish-separator" aria-hidden="true">/</span>
+  <a class="teach-publish-link" href="/teach/kimi-k3-kv-cache/">Kimi K3 架构与 KV Cache</a>
+  <span class="teach-publish-spacer"></span>
+  <a class="teach-publish-link teach-publish-previous" href="/teach/kimi-k3-kv-cache/0001-kimi-k3-module-math/">上一课：第一课：Kimi K3 四个核心模块的公式与真实张量流</a>
+  <span class="teach-publish-link teach-publish-link-disabled"></span>
+</nav><main class="wrap"><div class="kicker">Lesson 02 · Inference trace</div><h1>一个请求走完 Kimi K3 的 prefill 与 decode</h1>
+<p class="lede">这次不再逐个孤立地看模块。我们让提示词 token <code>[A,B,C,D]</code> 一次穿过 93 层，采样得到 <code>E</code>；再把 <code>E</code> 作为下一轮输入，更新 KDA 与 MLA cache，得到用于采样 <code>F</code> 的 logits。</p>
+<div class="callout"><strong>版本边界：</strong>shape 对照 vLLM main <code>f4b161d7</code>（2026-08-18）。为了看清时间线，示例只有一个请求、4 个 prompt token、非 speculative decode；<code>A...F</code> 是教学符号，不代表真实词表 id。真实模型仍是 93 层、hidden 7168、词表 160K。</div>
+
+<h2>0. 最先澄清：模型输出的是 logits，不是“下一 token”</h2>
+<div class="equation">prefill 输入: [A,B,C,D]
+模型最后一个位置输出: logits_D [160000]
+采样器: E ~ Softmax(logits_D / temperature)
+
+第 1 次 decode 输入: [E]
+模型输出: logits_E [160000]
+采样器: F ~ Softmax(logits_E / temperature)</div>
+<p>因此 prefill 已经计算出了第一个生成 token <code>E</code> 的分布；第一次 decode 消费的是 <code>E</code>，并产生 <code>F</code> 的分布。把“decode 输入 E”和“decode 输出 E”混为一谈，会让 cache 的写入时点整体错一格。</p>
+
+<h2>1. 先记住三类东西的生命周期</h2>
+<div class="legend"><span>请求持久状态</span><span class="temp">当前 forward 临时量</span><span class="weight">模型常驻权重</span></div>
+<div class="table-wrap"><table><tbody><tr><th>类别</th><th>prefill 后是否留下</th><th>例子</th></tr>
+<tr><td>请求持久状态</td><td>是，decode 下一步读取并更新</td><td>69 层的 KDA short-conv history 与 recurrent state；24 层的 MLA latent pages；长度、slot mapping、page table</td></tr>
+<tr><td>当前 forward 临时量</td><td>否，使用完成即可复用/释放</td><td><code>Q/K/V</code>、AttnRes depth buffer、router logits、expert activation、hidden states、LM logits</td></tr>
+<tr><td>模型常驻权重</td><td>一直在模型实例中，不属于某个请求</td><td>投影矩阵、896 个 expert 权重、AttnRes score vectors、RMSNorm 参数、decode 吸收后的 <code>W_UK_T/W_UV</code></td></tr></tbody></table></div>
+
+<h2>2. Prefill：一次输入四个 token</h2>
+<h3>2.1 embedding 与本轮 packed token 维</h3>
+<div class="equation">token_ids                         [4]
+embedding lookup → X0               [4,7168]
+attn_res buffer 初始化               [4,8,7168]
+positions / query_start_loc / slots  metadata</div>
+<p>vLLM 常把同一调度轮的多个请求 pack 到 token 维，所以生产代码里的第一维通常是本轮总 token 数 <code>T</code>，而不是整齐的 <code>[batch,seq]</code>。本例只有一个长度 4 的请求，所以 <code>T=4</code>。</p>
+
+<h3>2.2 第 0 层是 KDA：四个位置并行准备，状态按顺序组合</h3>
+<div class="equation">AttnRes(X0)                              [4,7168]
+packed projection:
+  Qraw/Kraw/Vraw/G²                   [4,96,128]
+  F_a                                 [4,128]
+  beta_raw                            [4,96]
+ShortConv4 + Swish:
+  q/k/v                               [4,96,128]
+decay α                               [4,96,128]
+
+FlashKDA / chunk KDA:
+  S_0 --A--&gt; S_A --B--&gt; S_B --C--&gt; S_C --D--&gt; S_D
+  output                              [4,96,128]
+flatten + output projection           [4,12288] → [4,7168]</div>
+<p>逻辑上仍按 <code>A→B→C→D</code> 更新每个 head 的 <code>S:[128,128]</code>；prefill kernel 把 chunk 内可改写成 GEMM 的 token 交互并行计算，只在 chunk 边界传 state。该层完成后，请求保留最终 <code>S_D:[96,128,128]</code>，而不是四份 state。</p>
+<p>short conv 也只保留继续计算所需的最后 3 个 raw Q/K/V 输入。全局逻辑 shape 为 <code>[36864,3]</code>；TP=8 时每 rank 是 <code>[4608,3]</code>，recurrent state 是 <code>[12,128,128]</code>。</p>
+
+<h3>2.3 经过第三个 KDA 后，进入第一层 Gated MLA</h3>
+<div class="equation">X_mla                                      [4,7168]
+fused_qkv_a_proj → [q_c | c]                  [4,2112]
+q_c / latent c after RMSNorm                   [4,1536] / [4,576]
+q_b_proj → Q                                   [4,96,192]
+kv_b_proj(c) → K / V（prefill 临时展开）         [4,96,192] / [4,96,128]
+causal attention scores                        [96,4,4]
+attention output + full-rank gate              [4,96,128]
+o_proj                                         [4,7168]
+写入 paged latent cache                         4 × [576]</div>
+<p>第 <code>D</code> 个位置只能看 <code>A...D</code>；第 <code>A</code> 个位置只能看自己。prefill 为了高吞吐会临时展开完整 K/V，但请求持久 cache 只留下四个 576 维 latent：<code>[c_A,c_B,c_C,c_D]</code>。相同动作在 24 个 MLA 层分别发生。</p>
+
+<h3>2.4 每层的 AttnRes 与 Stable LatentMoE</h3>
+<div class="equation">attention 前 AttnRes                       [4,R,7168] → [4,7168]
+KDA 或 MLA                                     [4,7168]
+MLP 前 AttnRes                                 [4,R,7168] → [4,7168]
+
+router logits                                  [4,896] FP32
+Top-16 ids / weights                           [4,16] / [4,16]
+routed down                                    [4,3584]
+dispatch 后逻辑输入                             [4×16,3584]
+expert gate/up                                 [4×16,3072] 各一份
+combine + norm + up                            [4,3584] → [4,7168]
+shared experts                                 [4,7168]
+合并输出                                       [4,7168]</div>
+<p><code>R</code> 是该层可见的深度来源数，随深度 block 推进而增加，最多是 embedding、已完成的 block 和当前 block 部分和。它不是序列长度 4。四个 token 的 AttnRes buffer 在这次 93 层 forward 内流转，最后即失去用途；decode <code>E</code> 时会为 <code>E</code> 新建一份。</p>
+
+<h3>2.5 第 92 层、LM head 与第一次采样</h3>
+<div class="equation">最后一层 Gated MLA 输出                  [4,7168]
+最终 AttnRes + RMSNorm                         [4,7168]
+LM head（逻辑上）                               [4,160000]
+只取本请求最后位置 D 的 logits                  [160000]
+采样 → E                                      scalar token id</div>
+<p>服务引擎通常无需保留 prompt 每个位置的全词表 logits；生成只需要最后一个有效位置。至此 prefill 结束，cache 已经包含 <code>A...D</code>，但还不包含刚采样出的 <code>E</code>。</p>
+
+<h2>3. Prefill 结束后的请求状态快照</h2>
+<div class="table-wrap"><table><tbody><tr><th>持久项</th><th>每层/每请求逻辑内容</th><th>共几组</th><th>此刻代表的历史</th></tr>
+<tr><td>KDA recurrent state</td><td><code>[96,128,128]</code>；TP=8 每 rank <code>[12,128,128]</code></td><td>69 层</td><td><code>A...D</code> 经各层输入形成的最终 state</td></tr>
+<tr><td>KDA conv state</td><td>Q/K/V 各通道最近 3 项；全局 <code>[36864,3]</code></td><td>69 层</td><td>能继续对 E 做 causal Conv4</td></tr>
+<tr><td>MLA latent pages</td><td>每 token <code>[576]</code></td><td>24 层</td><td>每层各有 <code>[c_A,c_B,c_C,c_D]</code></td></tr>
+<tr><td>调度/cache metadata</td><td>request length=4、block table、slot mapping 等</td><td>请求级</td><td>下一步把 E 写到逻辑位置 4</td></tr></tbody></table></div>
+<div class="callout warning"><strong>不要算错显存：</strong>上表是逻辑 shape。实际字节数还依赖 TP/PP、state dtype、latent cache dtype、对齐、page 分配和是否启用 RecoverSSM。没有这些假设时，只能比较元素量和增长阶数。</div>
+
+<h2>4. Decode：把 E 作为一个新输入 token</h2>
+<h3>4.1 新 forward 从头穿过 93 层</h3>
+<div class="equation">decode input token_id = E                [1]
+embedding → X_E                               [1,7168]
+新的 AttnRes buffer                           [1,8,7168]
+
+注意：E 仍会依次经过第 0...92 层；
+“只算一个 token”不等于“只算一层”。</div>
+
+<h3>4.2 在每个 KDA 层原地前进一步</h3>
+<div class="equation">读取该层旧 conv history + S_D
+E 的 raw Q/K/V → causal Conv4，丢掉最老项并追加 E
+生成 q_E,k_E,v_E,α_E,β_E,g²_E
+
+S_before = Diag(α_E) S_D
+S_E = S_before + β_E k_E (v_E - S_before^T k_E)^T
+o_E = S_E^T q_E                         [96,128]
+gate + o_proj                            [1,7168]
+
+写回该层 conv history 与 S_E</div>
+<p>纯 decode 正是 vLLM <code>kda.py</code> 的 fused recurrent 路径：按 metadata 找到该请求的 state slot，更新 conv state 与 recurrent state。计算量不会随 <code>A...D</code> 的长度线性增长，但必须为 69 个 KDA 层分别维护状态。</p>
+
+<h3>4.3 在每个 MLA 层追加 E，并查询 A...E</h3>
+<div class="equation">E → q_E [1,96,192], c_E [1,576]
+把 c_E 写入本层 cache，历史变成 [c_A,...,c_E]
+
+BMM1:
+q_latent = q_E W_UK_T                       [1,96,576]
+latent MQA scores                           [1,96,5]
+latent_out = Softmax(scores) · [c_A...c_E]  [1,96,576]
+BMM2:
+head_out = latent_out W_UV                  [1,96,128]
+full-rank gate + o_proj                     [1,7168]</div>
+<p>decode 路径没有为五个历史位置物化 <code>K:[5,96,192]</code> 和 <code>V:[5,96,128]</code>。vLLM 在模型加载后的 weight processing 阶段准备 <code>W_UK_T/W_UV</code>，运行时走 BMM1 → latent MQA → BMM2。这是 MLA 真正降低 decode cache 读取与中间展开的地方。</p>
+
+<h3>4.4 MoE 与 AttnRes 没有历史 cache</h3>
+<p>对 <code>E</code>，router 重新生成 <code>[1,896]</code> logits，并可能选择与 <code>D</code> 完全不同的 16 个专家；expert activation 用完就释放。AttnRes 也只混合 <code>E</code> 在深度方向的表示，不会读取 <code>A...D</code> 的 AttnRes buffer。跨 token 信息来自 KDA state 与 MLA latent history。</p>
+
+<h3>4.5 得到 F 的分布</h3>
+<div class="equation">E 经过最后层 → hidden_E                  [1,7168]
+LM head → logits_E                            [1,160000]
+F ~ Softmax(logits_E / temperature)
+
+此刻 cache 已包含 A...E；F 尚未写入。
+下一次 decode 消费 F，产生 G 的 logits。</div>
+
+<h2>5. vLLM 为什么需要一份混合 metadata</h2>
+<p>一次 scheduler batch 可以同时放入长 prompt、chunked prefill 的续块、普通 decode token，甚至 speculative token。token 张量会被 pack 在一起，但 KDA kernel 要区分“可 chunk 并行的 prefill”和“原地前进一步的 decode”，MLA backend 又要知道每个 query 对应哪些 latent pages。</p>
+<div class="table-wrap"><table><tbody><tr><th>metadata 作用</th><th>KDA 使用方式</th><th>MLA 使用方式</th></tr>
+<tr><td>请求边界与 query 长度</td><td><code>query_start_loc</code> 切分各请求递推序列</td><td>构造 causal mask 与每请求 context 长度</td></tr>
+<tr><td>state/cache 索引</td><td><code>state_indices</code> 定位 conv/recurrent slot</td><td><code>slot_mapping/block_table</code> 定位 latent page</td></tr>
+<tr><td>prefill/decode 分类</td><td>选择 FlashKDA/chunk 或 fused recurrent</td><td>选择 full prefill attention 或 absorbed latent MQA</td></tr>
+<tr><td>重新排序</td><td>spec 与 non-spec token 可先拆开再写回 packed 顺序</td><td>decode query 与 cache insert 在 fused kernel 中对齐</td></tr></tbody></table></div>
+<p>所以 Python <code>forward</code> 看起来是一条统一数据流，底层却按 token 类型分派不同 kernel；这属于 vLLM 的批处理实现，不是模型公式额外增加了一种 attention。</p>
+
+<h2>6. Speculative decode 为什么对 KDA 更难</h2>
+<p>普通 MLA 可以给 draft token 分配临时 cache slots，拒绝后丢弃。KDA 的问题是 state 更新具有顺序性：若一次验证 <code>[E,F,G]</code>，执行完后 <code>S</code> 已前进三步；若只接受 <code>E</code>，不能通过删除两条 KV 记录恢复 <code>S_E</code>。</p>
+<div class="equation">验证前 checkpoint: S_D
+草稿验证: S_D --E--&gt; S_E --F--&gt; S_F --G--&gt; S_G
+只接受 E 时，正确提交状态应是 S_E，而不是 S_G</div>
+<p>vLLM 当前 K3 支持把 speculative token 与 non-spec token 分开。ReplaySSM/RecoverSSM 路径保留 checkpoint 与更小的校正/投影记录，在验证结果已知后重放或恢复正确边界，而不是为每个 draft 位置复制完整 <code>[96,128,128]</code> state。这是后端优化；不开 speculative decode 时，本课前面的 plain decode 时间线不需要这些附加记录。</p>
+
+<h2>7. 用一张表复盘整轮生成</h2>
+<div class="table-wrap"><table><tbody><tr><th>时刻</th><th>本轮模型输入</th><th>cache 提交后包含</th><th>模型给出的分布</th><th>随后采样</th></tr>
+<tr><td>prefill</td><td><code>A,B,C,D</code></td><td><code>A...D</code></td><td><code>p(next | A...D)</code></td><td><code>E</code></td></tr>
+<tr><td>decode #1</td><td><code>E</code></td><td><code>A...E</code></td><td><code>p(next | A...E)</code></td><td><code>F</code></td></tr>
+<tr><td>decode #2</td><td><code>F</code></td><td><code>A...F</code></td><td><code>p(next | A...F)</code></td><td><code>G</code></td></tr></tbody></table></div>
+
+<div class="quiz" id="quiz" data-quiz=""><h2>检索练习</h2><p><strong>问题：</strong>prefill 刚采样出 E、但还没执行第一次 decode 时，哪些请求状态已经包含 E？</p><button type="button">KDA state 与 MLA latent cache 都已经包含 E，因为 E 是 prefill 的输出</button><button type="button" data-ok="true">都不包含；prefill cache 截止 D，E 要作为下一轮 decode 输入才被写入</button><button type="button">只有 AttnRes buffer 包含 E，它会跨 decode step 保存到 93 层结束</button><p class="feedback" id="feedback" data-feedback="" aria-live="polite"></p></div>
+<p class="foot">先读：<a href="../0001-kimi-k3-module-math/">第一课：四个模块的公式与 shape</a>。实现对照：<a href="https://github.com/vllm-project/vllm/tree/f4b161d7fca438bfe29509984759be1943a5aa88/vllm/models/kimi_k3/nvidia">vLLM Kimi K3 NVIDIA backend at f4b161d7</a>。速查：<a href="../reference/kimi-k3-vllm-inference-ledger.html">推理状态台账</a>。</p>
+</main><script>const buttons=document.querySelectorAll('#quiz button');const feedback=document.querySelector('#feedback');buttons.forEach((button)=>button.addEventListener('click',()=>{buttons.forEach((b)=>b.classList.remove('correct','wrong'));if(button.dataset.ok){button.classList.add('correct');feedback.textContent='正确：采样发生在模型前向之后，只有消费 E 的下一轮前向才会把 E 提交到 KDA/MLA cache。';}else{button.classList.add('wrong');feedback.textContent='不对。区分模型本轮输入、输出 logits 和采样器选出的 token，再沿时间线检查一次。';}}));</script>
+</body></html>
