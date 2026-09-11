@@ -1,231 +1,253 @@
 ---
-title: DeepSeek-V4-Flash 推理架构：从 CSA/HCA 到磁盘 KV Cache
+title: DeepSeek-V4.1-Flash 架构详解：CED、CSA2 与 890 字节 KV Cache
 category: [论文阅读]
-date: 2026-09-11 20:45
-tags: [DeepSeek, DeepSeek-V4, Flash, Attention, KV Cache, MoE, 推理优化]
+date: 2026-09-11 21:15
+tags: [DeepSeek, DeepSeek-V4.1, Flash, CSA2, CED, KV Cache, MoE, 多模态]
 ---
 
-> 资料说明：本文依据 DeepSeek-AI 的技术报告《DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence》（arXiv:2606.19348，2026-04-26）整理。报告确认了 `DeepSeek-V4-Flash`，没有确认名为“V4.1”的公开版本；因此文中把“DSK v4.1 Flash”按 V4-Flash 解读，版本号仍以官方后续发布为准。
+> 资料说明：本文以 DeepSeek-AI 发布的 [DeepSeek_V41_Tech_Report.pdf](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf) 为主资料，模型仓库为 [deepseek-ai/DeepSeek-V4.1-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash)。报告的主题是“Pushing the Limits of KV Cache Compression”，发布时间以仓库页面和报告版本为准。
 
 ## 先说结论
 
-DeepSeek-V4-Flash 的目标是让一百万 token 的上下文可以用于实际服务。它从几个方向压低成本：
+DeepSeek-V4.1-Flash 的变化集中在一件事上：让长时间运行的 agent 少做 prefill、少存 KV、少搬运 KV。它不是把 V4 的压缩比例调小，而是同时压缩了三个维度：
 
-- 43 层 Transformer，隐藏维度 4096；总参数约 284B，每个 token 激活约 13B。
-- 注意力层交错使用 CSA 和 HCA。CSA 把历史压缩后再用 Lightning Indexer 选 top-k；HCA 压得更狠，但在压缩块上做 dense attention。
-- 两种注意力都保留 128 token 的滑动窗口，补回压缩后容易丢失的局部细节。
-- 每层有 1 个 shared expert 和 256 个 routed experts，每个 token 选 6 个 routed experts。
-- 推理时同时管理压缩 KV、滑窗 KV 和尚未凑满压缩块的 state；共享前缀还可以落盘复用。
+1. **层维度**：CED 把 40 层拆成 20 层 causal encoder 和 20 层 decoder。decoder 的 global KV 直接从 encoder 最后一层的 hidden state 投影得到，长前缀不必再完整跑一遍 decoder。
+2. **序列维度**：CSA2（Compressed Sparse Attention 2）把 main KV 压缩，并在不同层之间复用 KV、indexer K 和 Top-K 索引。decoder 里的 Hierarchical Sparse Indexer 还把后续检索限制在候选池内。
+3. **数值维度**：main KV 使用 MXFP4，SWA KV 保留 FP8。报告给出的 global KV cache 是每 token 890 字节，约为 V4-Flash 的四分之一；persistent KV cache 通过 SWA Bounded Replay 降到 V4 的约八分之一。
 
-报告给出的估算是：在 1M 上下文、相同计算口径下，V4-Flash 单 token FLOPs 约为 DeepSeek-V3.2 的 10%，KV cache 约为 7%。这是论文报告值，实际服务还会受到 GPU、batch、kernel 和存储设备的影响。
+模型本身是多模态 MoE：backbone 参数 552B，另有 196B Engram 参数；每 token 在 prefill 阶段激活 8B，decode 阶段激活 16B。它支持最多 1M token 上下文。报告还称，context 从 4K 增长到 1M（256 倍）时，单 token decode FLOPs 只增加约四分之一。
 
-## 1. Flash 的配置到底是什么
+## 1. 模型骨架：40 层分成 encoder 和 decoder
 
-| 项目 | V4-Flash 配置 | 作用 |
-| --- | ---: | --- |
-| Transformer 层数 | 43 | 决定每个 token 要经过多少个 block |
-| 隐藏维度 | 4096 | 残差流宽度 |
-| Query heads | 64 | 生成 query 的头数 |
-| Attention head dim | 512 | 每个 query head 的维度 |
-| Query compression dim | 1024 | 低秩 query 的中间维度 |
-| CSA 压缩比例 $m$ | 4 | 每 4 个 token 形成一个 CSA entry |
-| HCA 压缩比例 $m'$ | 128 | 每 128 个 token 形成一个 HCA entry |
-| CSA indexer top-k | 512 | 每个 query 进入主 attention 的压缩 entry 数 |
-| Indexer heads / dim | 64 / 128 | Lightning Indexer 的轻量检索路径 |
-| 滑动窗口 | 128 | 保留最近 token 的未压缩 KV |
-| Routed experts | 256 | 稀疏 MoE 的专家池 |
-| 每 token 激活 routed experts | 6 | 计算时实际执行的 routed experts 数 |
-| Shared experts | 1 | 每个 token 都经过的共享专家 |
-| 单专家中间维度 | 2048 | SwiGLU 专家内部宽度 |
-| MTP 深度 | 1 | Multi-Token Prediction 的预测层数 |
-| mHC expansion | 4 | 残差流扩展路数 |
+V4.1-Flash 接收文本和图片，统一转成语言 backbone 的 token 序列。图片先经过 DeepSeek-ViT，再经过 MLP projector，插入对应的 image-token 位置。
 
-`284B` 是所有专家参数加起来的总容量，`13B` 是一次 token 路由时实际参与计算的参数量。模型总容量很大，单 token 的计算量仍可以控制在较小范围内。
+语言 backbone 有 40 个 causal Transformer layer：前 20 层是 causal encoder，后 20 层是 decoder。每层都有 global attention 和 128 token 的 Sliding Window Attention（SWA），只有 encoder 的前两层使用纯 SWA。
 
-## 2. 一次 decode 经过哪些路径
+官方配置如下：
 
-把一个请求看成长度为 $T$ 的前缀加上正在生成的新 token。Flash 的一个 Transformer block 大致经过这条路径：
+| 项目 | V4.1-Flash |
+| --- | ---: |
+| Backbone 参数 | 552B |
+| Engram 参数 | 196B |
+| Transformer 层 | 40（encoder 20 + decoder 20） |
+| Hidden size | 5120 |
+| 最大上下文 | 1,048,576 token |
+| Query heads / head dim | 64 / 512 |
+| CSA2 压缩比例 | encoder 2，decoder 1 |
+| CSA2 top-k | 512 |
+| Indexer heads / dim | 32 / 128 |
+| Query compression dim | 1280 |
+| Hierarchical 候选池 | 最多 2048 个 block，每个 8 个位置，共 16384 个候选位置 |
+| SWA window | 128 |
+| Routed experts | 384 |
+| Shared experts | 1 |
+| 每 token 激活 routed experts | 6 |
+| 单专家中间维度 | 2304 |
+
+encoder 的 18 个非纯 SWA 层分成三组，每组 6 层：第一层是 CSA2 Full，后五层是 Reuse。decoder 的 20 层分成五组，每组 4 层：第一组是 Full 加三层 Reuse，其余四组是 Reindex 加三层 Reuse。
 
 ```mermaid
 flowchart TD
-    H[当前 hidden state] --> Q[低秩 query 投影]
-    H --> C[CSA/HCA 压缩器]
-    C --> KVC[压缩 KV entries]
-    Q --> IDX[CSA Lightning Indexer]
-    IDX --> TOPK[选择 512 个 CSA entries]
-    TOPK --> ATT[CSA 稀疏 attention]
-    KVC --> HATT[HCA dense attention]
-    H --> SWA[最近 128 token 的滑窗 KV]
-    ATT --> MERGE[与滑窗分支合并]
-    HATT --> MERGE
-    MERGE --> RES[mHC 残差混合]
-    RES --> ROUTER[MoE 路由]
-    ROUTER --> EXP[6 个 routed + 1 个 shared expert]
-    EXP --> OUT[下一个 block]
+    IMG[图片] --> VIT[DeepSeek-ViT]
+    VIT --> PROJ[MLP projector]
+    TXT[文本] --> EMB[文本 embedding]
+    PROJ --> MIX[合并到 token 序列]
+    EMB --> MIX
+    MIX --> ENC[20 层 causal encoder]
+    ENC -->|最后一层 hidden state| DEC[20 层 decoder]
+    ENC -->|CED 投影 global KV| GKV[decoder global KV]
+    DEC --> OUT[自回归输出]
+    GKV --> CSA[CSA2 sparse attention]
+    DEC --> SWA[128 token SWA]
+    CSA --> OUT
+    SWA --> OUT
+    OUT --> DSP[DSpark speculative decoding]
 ```
 
-prefill 阶段会把输入前缀按块处理，同时生成压缩 entry 和滑窗状态。decode 阶段只新增一个 token：它要读取已经压缩的远程历史、最近 128 token 的局部 KV，并把新 token 写回对应的状态缓存。压缩块尚未凑满时，尾部 token 先保存在 state cache，等凑齐后再做压缩。
+## 2. CED：prefill 只把 encoder 跑完整
 
-## 3. CSA：先压缩，再检索
+普通 Transformer 在 prefill 时要让每一层处理整段前缀。假设序列长度是 $N$，层数是 $L$，这部分工作量可以粗略写成 $O(NL)$。
 
-### 3.1 压缩不是平均池化
-
-CSA 对 hidden states $H$ 计算两路候选 KV：
+CED 把底部 $L/2$ 层当作 causal encoder。对于 decoder 层 $l>L/2$，global attention 所需的 KV 不再从自己的 hidden state $H_l$ 计算，而是从 encoder 最后一层 $H_{L/2}$ 经过该层专属投影得到：
 
 $$
-C^a = H W^a_{KV}, \qquad C^b = H W^b_{KV}
+C_l = H_{L/2}W_l^{KV},\qquad Z_l = H_{L/2}W_l^Z
 $$
 
-同时计算两路权重 logits：
+因此长前缀的 global KV 在 encoder 阶段一次生成，decoder 不需要再对全部 $N$ 个 token 做完整的 global KV 计算。对于 $N\gg n_{win}$ 的输入，报告给出的 prefill 复杂度近似为：
 
 $$
-Z^a = H W^a_Z, \qquad Z^b = H W^b_Z
+O(NL)\;\longrightarrow\;O\left(N\frac{L}{2}+n_{win}\frac{L}{2}\right)\approx O\left(N\frac{L}{2}\right)
 $$
 
-对于每个压缩块，模型在候选的 $2m$ 个位置上做带位置偏置的 softmax，再按权重求和。$m=4$ 时，一个 CSA entry 大致概括 4 个 token；实现中的重叠窗口会让相邻 entry 共享一部分候选，因此边界更平滑。
+SWA 是例外。它依赖每一层自己的 hidden state，所以 encoder 和 decoder 都要维护局部状态。这个代价由后文的 SWA Bounded Replay 控制在 128 token 的范围内。
 
-这不是“每四个 token 取平均”。权重由当前 hidden state 和训练参数决定，块内不同位置可以有不同贡献。
+## 3. CSA2：把 KV 的层维度也压缩
 
-### 3.2 Lightning Indexer 负责找远处的块
+V4 的 CSA/HCA 主要沿序列维度压缩：多个 token 合成一个 KV entry。V4.1 的 CSA2 再沿层维度复用缓存。
 
-如果每个 query 都对全部压缩 entry 做主 attention，长上下文仍然会产生很大的读取量。CSA 先用低成本的 indexer 计算相关性：
+CSA2 每层有三种静态模式：
+
+| 模式 | 当前层新算什么 | 复用什么 |
+| --- | --- | --- |
+| Full | main KV、indexer Q/K、Top-K 索引 | 无 |
+| Reindex | 当前层 indexer Q 和新的 Top-K | 最近 Full 层的 main KV、indexer K |
+| Reuse | 当前层 Q、SWA KV 和 attention | 最近的 main KV、indexer K、Top-K 索引 |
+
+三种模式都会计算当前层的 query 和 SWA KV。区别只在 global KV、indexer K 和 Top-K 索引从哪里来。
+
+### 3.1 encoder 和 decoder 的分组
+
+encoder 的 CSA2 压缩比例是 $m=2$。18 个 CSA2 层分成三组，每组第一层 Full，后五层 Reuse。因此一组里只有一个 layer 生成 global KV，其余层共享它。
+
+decoder 的压缩比例是 $m=1$，也就是不沿 token 数做额外压缩，但仍然沿层复用。第一组使用 Full + 3 Reuse；之后四组使用 Reindex + 3 Reuse。Reindex 层可以换一套 Top-K 位置，同时不重复保存 main KV。
+
+### 3.2 Hierarchical Sparse Indexer
+
+第一层 Full 会扫描当前可见的所有 main KV，选出自己的 Top-512。它同时按 block 聚合 indexer 分数，选出最多 2048 个 block，每个 block 包含 8 个位置，于是形成最多 16384 个候选位置。
+
+后面的 Reindex 层只在这个候选池中重新打分。候选池大小固定后，后续 indexer 的工作量不再随上下文长度线性增长。Reuse 层连 indexer 都不跑，直接使用最近一次得到的 Top-K。
+
+这个机制有一个前提：候选池限制必须在训练阶段和推理阶段保持一致。否则训练时见过完整上下文，推理时却只能在候选池里搜索，indexer 会出现分布偏移。
+
+CSA2 还简化了压缩器：它取消了 V4 CSA 的重叠压缩和绝对位置偏置，并直接从 main KV 投影 indexer K。实现更简单，训练和推理的中间张量也更少。
+
+## 4. FP4 main KV：缓存格式和 attention 格式分开
+
+V4.1-Flash 把 main KV 压成 OCP MXFP4。论文采用 E2M1 数据格式，每 16 个 channel 使用一个 E4M3 scale；不再额外使用全局 scale。attention 计算前再把缓存反量化，因此不要求 GPU 原生支持 FP4 矩阵乘。
+
+这条路径的取舍是：
+
+- main KV：FP4，目标是降低 HBM 和 SSD 存储量；
+- SWA KV：FP8，因为局部状态对量化更敏感；
+- 反量化后的 KV：使用更高精度格式参与 attention，保持硬件兼容性。
+
+报告给出的 global KV footprint 是每 token 890 字节，约为 V4-Flash 的 1/4。这个数字指始终保存在 HBM 中的 global KV，不等于模型权重大小，也不等于一个请求的全部内存占用。
+
+## 5. SWA Bounded Replay：不把 SWA 写进 SSD
+
+SWA KV 只在一个活跃会话的短时间内有用。跨会话保留它会占用大量 SSD，却很少被再次读取。V4.1 的做法是：
+
+- global KV 写入 persistent KV cache，目标保留至少 72 小时；
+- SWA KV 放进每台机器约 10% host DRAM 的分布式内存池，TTL 只有几分钟；
+- SWA 从内存池淘汰后，使用 bounded replay 重建，而不是把它写回 SSD。
+
+精确重建 $L$ 层的 SWA，理论上要重放 $L\times n_{win}$ 个 token。bounded replay 只重放最近 $n_{win}=128$ 个 token，并截断 replay 段能看到的窗口：
 
 $$
-I_{t,s} = \sum_h w^I_{t,h}\,\mathrm{ReLU}(q^I_{t,h}\cdot K^{I,Comp}_s)
+\mathrm{SWAKeys}(i)=\left[\max(s,i-W+1),\ i\right]
 $$
 
-然后取分数最高的 512 个 entry：
+其中 $s$ 是 replay 起点，$W$ 是窗口大小。这样重建出来的 state 不是完整前向的数学等价物，但报告实验显示质量影响很小。
 
-$$
-S_t = \mathrm{TopK}(I_{t,:}, 512)
-$$
+对于 encoder，命中 global KV 但缺少 SWA KV 时，系统重放缓存前缀最后 128 个 token，再接着处理未缓存的 suffix。重放部分只生成 SWA KV，不覆盖已经命中的 global KV。
 
-主 attention 只读取 $S_t$ 中的压缩 KV。要注意，indexer 仍要扫描候选 entry；top-k 节省的是主 attention 的大维度计算和不规则 KV 读取，并不是让所有工作都变成常数时间。
+对于 decoder，CED 已经提供了 global KV，系统只需把 prompt 最后 128 个 token 的 encoder 输出经过 decoder，得到 decode 初始阶段需要的 SWA KV。这样可以避免把整个 decoder 前缀重新跑一遍。
 
-### 3.3 共享 KV 和分组输出投影
+这两个 replay 策略让 persistent KV cache 只保存复用价值高的 global KV。论文估算 persistent footprint 约为 V4 的 1/8。
 
-CSA 生成 64 个 query heads，但压缩后的 KV 作为共享的 key/value 使用，属于 MQA 形式。这样可以避免为每个 query head 保存一份 KV。
+## 6. MoE 与 Engram：容量、记忆和路由
 
-64 个 head 的输出不会直接一次性投影回 4096 维。实现把它们分成 8 组，每组先投影到 1024 维，再合并成最终 attention 输出。这个分组步骤减少了一个巨大矩阵乘法的形状压力。
+V4.1-Flash 每个 Transformer block 都使用 DeepSeekMoE：1 个 shared expert 加 384 个 routed experts，每个 token 选 6 个 routed experts，单专家中间维度为 2304。
 
-## 4. HCA：用更粗的摘要覆盖超长距离
+因为图片 token 和文本 token 的分布不同，模型为两种模态维护独立的 expert correction bias。bias 只影响专家选择，原始 routing score 仍用于组合专家输出。这样做可以分别平衡图像和文本 token 的专家负载。
 
-HCA 使用 $m'=128$，每 128 个 token 聚合成一个 entry。它不再做 CSA 那样的 top-k，而是在所有 HCA entries 上做 dense attention：
+Engram 是另一条参数路径。模型分配 196B Engram 参数，放在第 1 层和第 14 层（从 0 开始计数），每个模块使用 2、3、4-gram，8 个 hash head，总 embedding 维度为 2048，表项约 1600 万。Engram 的查表地址只依赖输入 token，因此可以提前从 host memory 通过 RDMA 预取；第一模块的预取可以和第一个 Transformer block 的计算重叠。
 
-$$
-C^{Comp}_i = \sum_{j=128i}^{128(i+1)-1} S_j \odot C_j
-$$
+这解释了参数和激活量的差距：backbone 552B 是总容量，prefill 每 token 激活 8B，decode 激活 16B；Engram 参数是条件访问的记忆表，不会在每个 token 上全部计算。
 
-HCA 的优点是 entry 数量非常少，远距离读取规律，kernel 更容易做高吞吐；代价是一个 entry 覆盖的文本更长，细节会被压进摘要。CSA 与 HCA 交错使用，实际上是在两种取舍之间分工：CSA 负责可检索的中距离信息，HCA 负责便宜的全局信息。
+## 7. Single-Pass mHC：减少残差流的读写
 
-## 5. 128 token 滑窗为什么还要保留
+V4 的 mHC 在相邻 block 之间维护多条 residual stream。原实现需要多个 kernel，activation memory traffic 约为理想下界的两倍。
 
-压缩 attention 只看完整的历史压缩块。当前 token 所在的那个块还没完成压缩时，如果完全依赖压缩结果，模型看不到同一块里的细粒度信息；而语言模型通常很依赖最近几十个 token。
+V4.1 把输入 mixing 系数延后一层使用：当前 block 消费前一个 block 产生的系数。这样 residual update、input mixing 和 coefficient prediction 可以在同一遍 tile traversal 中完成。部署 kernel Mega-mHC 的读写量达到 $(2n+2)d$，相较原始 mHC 的 $(3n+2)d$，少了一次 residual 读取。
 
-因此 CSA 和 HCA 都增加一条滑动窗口分支，保存最近 128 个 token 的未压缩 KV。主 attention 结果与窗口结果一起参与后续投影。论文还加入了几项细节来稳定这条路径：
+论文的工程含义很直接：当 attention 和 MoE 都已经被压缩后，activation 的读写也可能成为瓶颈；融合 kernel 才能把结构上的节省兑现成延迟。
 
-1. Query 和压缩 KV 在 core attention 前做 RMSNorm。
-2. 只在 RoPE 的最后 64 个维度上应用旋转位置编码，并对 attention 输出做相应的相对位置处理。
-3. 为每个 head 加可学习的 attention sink logit，让某些 query 在需要时把总注意力权重压低。
+## 8. DSpark：用置信度决定验证长度
 
-这些设计说明“压缩比例”不是唯一参数。窗口大小、位置编码和归一化方式都会影响压缩后的信息能否被模型正确使用。
+V4.1 不再使用 V3 的 MTP 模块，而是单独训练 DSpark 做 speculative decoding。DSpark 包含：
 
-## 6. MoE：13B 激活量是怎样来的
+- 3 个 Transformer block，滑窗为 128；
+- 一次前向并行生成 5 个 draft position 的 base logits；
+- Markov head 建模 draft token 之间的依赖；
+- confidence head 预测每个位置的接受概率；
+- scheduler 根据前缀存活概率和当前引擎吞吐曲线，动态决定验证长度。
 
-Flash 的每层包含 256 个 routed experts 和 1 个 shared expert。每个 token 由 router 选择 6 个 routed experts，随后执行：
+因此验证长度不是固定常数。负载高、接受率低时，scheduler 可以缩短验证；接受率高且系统有余量时，可以多验证几个 draft token。
+
+## 9. 推理系统：EPD 解耦和少 kernel 路径
+
+部署采用 Encoder–Prefill–Decode（EPD）解耦，把 vision encoding、prefill 和 decode 分开扩缩容，并让它们重叠执行。
+
+在大多数 CSA2 Reuse 层，prefill 只执行约 15 个 kernel，decode 约 11 个 kernel。报告列出的关键融合实现包括 FlashMLA 的 fused-RoPE-attention-RoPE-cast、DeepGEMM 的 Mega-Gate/Mega-mHC/Mega-MoE、TileKernels 和 DeepSelect TopK。
+
+一次带共享前缀的请求可以按这个顺序理解：
 
 ```text
-Dispatch：把 token activation 发到目标专家所在的 GPU
-Linear-1：专家的上投影和 gate 投影
-Activation：SwiGLU
-Linear-2：专家下投影
-Combine：把结果发回原 token 所在的 GPU
+1. 从 persistent cache 读取 global KV。
+2. encoder 只处理未命中的 suffix，以及恢复 SWA 所需的最后 128 token。
+3. CED 从 encoder 最后一层 hidden state 投影 decoder global KV。
+4. decoder replay 最近 128 token，得到初始 decoder SWA KV。
+5. decode 使用 CSA2 选中的 global KV + 当前层 SWA KV。
+6. DSpark 生成并验证 draft token，scheduler 调整下一轮验证长度。
 ```
 
-DeepSeek-V4 的实现把这些步骤拆成多个 expert wave。当前 wave 在计算时，下一 wave 做 dispatch，上一 wave 做 combine，三者重叠进行。论文在 Flash 配置上给出的理论 speedup 最高约 1.92 倍；在实际推理 workload 上，报告的加速范围是 1.50 到 1.73 倍，RL rollout 等小 batch、低延迟场景最高约 1.96 倍。
+## 10. 性能数字应该怎样读
 
-这里的数字来自论文中的 kernel 对比，不能直接当成任意集群的端到端吞吐承诺。互联带宽、功耗上限和专家负载是否均衡，都会改变结果。
+报告中的几组数字经常被混在一起：
 
-## 7. 异构 KV Cache：为什么一个分页池不够
+| 指标 | V4.1-Flash 报告值 | 口径 |
+| --- | ---: | --- |
+| global KV cache | 890 bytes/token | 常驻 HBM 的 global KV |
+| global KV 相对 V4-Flash | 约 1/4 | 相同序列长度下 |
+| persistent KV 相对 V4 | 约 1/8 | global KV 持久化 + SWA bounded replay |
+| 4K→1M decode FLOPs | 增加约 1/4 | context 增长 256 倍 |
+| prefill 计算 | 约减少一半 | CED 长序列近似分析 |
 
-普通 dense attention 的 KV cache 可以按“每层、每个 token 固定大小”分页。Flash 的 cache 有三种不同状态：
+这些不是一台 GPU 上跑出来的通用 SLA。真实部署还要测：prefix 命中率、SSD/DRAM 读带宽、SWA replay 次数、MoE 跨卡通信、DSpark 接受率、并发数和输出长度。
 
-| 缓存部分 | 保存什么 | 生命周期 |
+## 11. 和 V4-Flash 的差异
+
+| 维度 | DeepSeek-V4-Flash | DeepSeek-V4.1-Flash |
 | --- | --- | --- |
-| CSA/HCA classical KV | 压缩后的 entries；CSA 还要有 indexer KV | 压缩块完成后长期存在 |
-| SWA KV | 最近 128 token 的未压缩 KV | 随窗口前进而淘汰 |
-| State cache | SWA 状态和 CSA/HCA 尚未压缩的尾部 hidden states | 请求级、位置相关 |
+| 注意力 | CSA/HCA 混合 | 纯 CSA2，按层复用 |
+| backbone 层数 | 43 | 40（20 encoder + 20 decoder） |
+| hidden size | 4096 | 5120 |
+| 总 backbone 参数 | 284B | 552B |
+| 激活参数 | 13B | 8B prefill / 16B decode |
+| MoE routed experts | 256 | 384 |
+| KV 精度 | 混合 BF16/FP8 | main KV FP4，SWA KV FP8 |
+| 前缀 prefill | 普通 encoder/decoder 路径 | CED，decoder global KV 来自 encoder |
+| 跨层复用 | 无 | CSA2 Full/Reindex/Reuse |
+| 持久化 SWA | 可选缓存策略 | 不进 persistent cache，使用 bounded replay |
+| 额外模块 | V4-Flash 报告未列入这些模块 | Single-Pass mHC、Engram、DSpark |
 
-论文的布局把前两类放在不同区域：每个请求先分配固定大小的 state cache；压缩 KV 则按块分配。一个 classical cache block 覆盖的原始 token 数取 $mathrm{lcm}(m,m')$ 的倍数，保证 $m=4$ 的 CSA 和 $m'=128$ 的 HCA 可以同时对齐。
+这里的“纯 CSA2”指 global attention 主路径，不代表模型没有 SWA；V4.1 每层仍然保留 128 token 的局部窗口。
 
-这也是它和普通 PagedAttention 的分界线：不同层的 entry 大小不同，SWA 有自己的淘汰策略，压缩分支还有“尾部未完成”状态。缓存管理器必须知道每种状态的写入、命中和回收规则。
+## 12. 适合什么场景，代价在哪里
 
-## 8. 磁盘 KV Cache：共享前缀怎么复用
+V4.1-Flash 的设计更适合长前缀、频繁工具调用和多模态 agent：
 
-长上下文 agent 请求经常共享同一份系统提示词、工具定义或文档前缀。V4 的推理框架允许把压缩 KV 写到磁盘，命中前缀时直接读取，跳过完整 prefill。
+- 同一批系统提示词和工具定义被反复使用；
+- 上下文从几十万 token 继续增长；
+- prefill 成本比单纯 decode 更突出；
+- 需要在 SSD、host memory 和 HBM 之间迁移缓存。
 
-CSA/HCA 的规则相对直接：磁盘保存完整压缩块，命中后读到最后一个完整块；最后一个不完整块仍要重新计算，因为它的未压缩尾部没有保存。
+短上下文、低并发服务未必能吃到全部收益。CSA2 的层模式、候选池、FP4 反量化和 bounded replay 都要求推理引擎配合；如果只加载权重而沿用普通 dense KV cache，文章中的 890 bytes/token 和 1/8 persistent footprint 都不会自动出现。
 
-SWA 的 KV 体积大约是压缩 KV 的 8 倍，论文给出三种策略：
+部署验证至少要记录：
 
-| 策略 | 磁盘空间 | 命中后的重算 | 适合场景 |
-| --- | --- | --- | --- |
-| Full SWA caching | 最大 | 几乎没有 | 存储充足、极低 TTFT |
-| Periodic checkpointing | 可调 | 从最近 checkpoint 重算尾部 | 在空间和算力间折中 |
-| Zero SWA caching | 最小 | 需要重算最近窗口状态 | SSD 紧张、重算便宜 |
-
-Zero SWA caching 并不意味着重新跑完整前缀。对一个 $L$ 层模型，利用已经命中的 CSA/HCA 压缩 KV，恢复最后 128 个 SWA KV 大约只需重算 $128L$ 个 token 对应的状态。实际收益取决于 SSD 读取带宽和 GPU 重算速度，不能只看“缓存命中率”一个指标。
-
-## 9. 精度路径也参与了 cache 预算
-
-V4 对 attention cache 使用混合存储：RoPE 相关维度保存 BF16，其余维度使用 FP8。这样比全部使用 BF16 的 KV 表示节省接近一半空间。Lightning Indexer 的 attention 计算使用 FP4；MoE expert 权重也采用 FP4 量化感知训练。
-
-精度选择有两个边界：
-
-- FP4 主要降低存储和乘法成本，是否带来实际峰值 FLOPs 优势取决于硬件是否有对应原生指令。
-- RoPE 维度仍保存 BF16，说明压缩和低精度不能脱离位置编码的数值误差单独讨论。
-
-所以部署时要同时记录 `dtype`、KV layout、kernel 版本和 GPU 架构。只把模型权重转换成 FP4，并不会自动得到论文中的 1M 上下文成本。
-
-## 10. 如何测量一套 Flash 服务是否真的有效
-
-建议至少分开记录四类指标：
-
-1. **Prefill**：TTFT、每秒处理 token 数、磁盘前缀命中后的重算 token 数。
-2. **Decode**：单请求 ITL、并发下的 tokens/s、每步读取的 CSA/HCA/SWA 字节数。
-3. **MoE**：dispatch/combine 时间、expert wave 利用率、跨卡通信占比。
-4. **资源**：GPU 显存、SSD 读写带宽、page fault 或 cache eviction 次数。
-
-测试时固定上下文长度、命中前缀比例、并发数、输出长度和精度。否则“Flash 比基线快”可能只是 batch 或 prefix 命中率不同造成的。
-
-## 11. 常见误区和适用场景
-
-### 误区一：把 V4-Flash 写成 V4.1
-
-目前公开论文确认的是 V4-Flash。没有官方版本页或变更记录前，不应把“V4.1”当作已发布版本，也不应为它补写不存在的参数。
-
-### 误区二：把 CSA 的 top-k 当成全局 top-k attention
-
-top-k 选择对象是压缩后的 KV entry，不是原始 token。$m=4$ 时，一个 entry 对应一个压缩块，不能把 512 解释为 512 个原始 token。
-
-### 误区三：只实现压缩 attention，忽略 cache 管理
-
-如果 kernel 只支持 CSA/HCA 的计算，却没有 state cache、窗口淘汰和尾块重算，长上下文 prefix reuse 仍然无法正确工作。
-
-### 什么时候值得采用
-
-V4-Flash 的设计更适合长文档问答、代码仓库分析、长时间 agent 轨迹和共享前缀很多的服务。短上下文、低并发场景下，复杂的压缩、稀疏 gather 和异构 cache 管理可能抵不过普通 FlashAttention 的简单路径。
-
-## 12. 小结
-
-V4-Flash 的“Flash”不是一个单独 kernel 的名字，而是一套模型和系统协同设计：CSA 用压缩加检索保留中距离细节，HCA 用更粗摘要覆盖远距离，128 token 滑窗照顾局部依赖；MoE 用 expert wave 把通信藏在计算后面；异构 KV cache 和磁盘存储则把这些结构变成可运行的服务。
-
-部署时，模型配置、压缩比例、cache layout、kernel、GPU 互联和 SSD 策略需要一起验证。论文中的 1M 上下文和 7% KV cache 是有前提的工程结果，不能脱离实现单独搬到另一套系统上。
+```text
+context length / prefix hit rate / replay tokens
+HBM global KV bytes / host SWA pool occupancy / SSD bandwidth
+MoE dispatch-combine time / DSpark acceptance rate
+TTFT / ITL / output tokens per second
+```
 
 ## 参考
 
-- DeepSeek-AI，**DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence**，arXiv: [2606.19348](https://arxiv.org/abs/2606.19348)
-- DeepSeek-AI，论文 PDF：<https://arxiv.org/pdf/2606.19348>
-- DeepSeek-V4 官方推理代码入口（论文脚注）：<https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/tree/main/inference>
-- DeepSeek DeepGEMM MegaMoE 实现（论文脚注）：<https://github.com/deepseek-ai/DeepGEMM/pull/304>
-- 本博客已有背景文章：[DeepSeek-V4 架构详解：CSA/HCA、mHC 与 1M 上下文推理](./deepseek-v4-architecture-deep-dive)
+- DeepSeek-AI，**DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression**：[官方 PDF](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/main/DeepSeek_V41_Tech_Report.pdf)
+- DeepSeek-V4.1-Flash 模型仓库：[Hugging Face](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash)
+- DeepSeek-AI，DeepSeek-V4 技术报告（用于对比 V4-Flash）：[arXiv:2606.19348](https://arxiv.org/abs/2606.19348)
+- DeepSeek-AI，DeepGEMM MegaMoE：[GitHub PR #304](https://github.com/deepseek-ai/DeepGEMM/pull/304)
