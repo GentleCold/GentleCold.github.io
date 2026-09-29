@@ -16,7 +16,7 @@ HiCache 针对的是一个常见的容量问题：RadixAttention 会把共享前
 flowchart TB
     R[新请求 token] --> T[HiRadixTree 本地匹配]
     T -->|命中| L1[L1: GPU KV pool]
-    T -->|GPU 没有，但 host 有| L2[L2: 实例私有 host KV pool]
+    T -->|GPU 没有, host 有| L2[L2: 实例私有 host KV pool]
     T -->|本地没有| Q[L3: storage backend 查询]
     Q -->|超过 prefetch threshold| P[异步 prefetch 到 L2]
     P --> L2
