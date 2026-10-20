@@ -81,7 +81,7 @@ flowchart TB
 
 这几条直接解释了代码里的几处选择：decode 一定是大 EP，所以步型一致性和 CPU 开销是首要问题；KV 一定要落盘，所以 state 布局要区分“要存”和“不存”。
 
-![DeepSeek V4.1 Flash 推理系统架构（来自 DeepInfer 仓库）](/imgs/deepinfer-architecture-overview.png)
+![DeepSeek V4.1 Flash 推理系统架构（来自 DeepInfer 仓库）](/imgs/deepinfer-architecture-overview.webp)
 
 ## 4. 引擎骨架
 
